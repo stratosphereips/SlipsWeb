@@ -64,3 +64,20 @@ Then run Slips and check that it is connecting to the Medallion server by search
 Also be sure that in the corresponding output folder there is a file called `STIX_data.json`, which holds all the alerts exported.
 
 Remember that only when Slips runs in an interface it sends the Alerts in real time. When run on files it will send at the end of the analysis.
+
+## 5. Run the SlipsWeb dashboard
+
+The dashboard is a small Flask application that periodically queries the TAXII
+collection and renders a live view of the evidences.
+
+```
+cd SlipsWeb
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+FLASK_APP=app.py flask run --reload
+```
+
+The UI will be available at <http://127.0.0.1:5000>. It automatically refreshes
+every few seconds, displaying timeline charts, the list of suspect IPs, and the
+details of each evidence produced by Slips.
