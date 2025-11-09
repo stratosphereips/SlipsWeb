@@ -23,17 +23,24 @@ source venv/bin/activate
 pip install medallion stix2 taxii2-client
 ```
 
-Change the password of the Medallion server in `config/medallion_config.json`.
 
-## 2. Run the medallion server
+## 2. Configure the medallion server
+The main configuration of the Meddalion server is in `config/medallion_config.json`
+
+In there you need to check
+
+- The IP address were the server will run. You can use 127.0.0.1 if Slips is running on the same computer. Or a specific IP or 0.0.0.0 for all the interfaces.
+- Change the password of the Medallion server. And be sure the same password is in the `config/slips.yaml` file of Slips
+- Change the port if you dont want to use 1234
+
+
+## 3. Run the medallion server
 
 The Medallion server run in the same computer as Slips, and then Medallion can listen in localhost.
 
-`medallion config/medallion_config.json --host 127.0.0.1 --port 1234`
+`./medallion_luncher.py`
 
-Or it can run in another computer, and then Medallion should listen in its IP or in 0.0.0.0
-
-`medallion config/medallion_config.json --host 0.0.0.0 --port 1234`
+For now the medallion server will not stay in the background, but it can.
 
 Now that the Medallion server is running. Slips can export to it. 
 
@@ -45,7 +52,7 @@ You can run this curl to check if medallion is working
 g_a_medallion_server http://localhost:1234/alerts/collections/`
 
 
-## 3. Exporting from Slips to Medallion TAXII Server
+## 4. Exporting from Slips to Medallion TAXII Server
 Follow the configuration of Slips for exporting to a TAXII server as described in [here](https://github.com/stratosphereips/StratosphereLinuxIPS/blob/master/docs/exporting.md#stix).
 
 Then run Slips and check that it is connecting to the Medallion server by searching for the following text in its output or log
