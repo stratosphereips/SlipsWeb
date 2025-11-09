@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify, render_template, current_app
 
 from dashboard_data import get_dashboard_payload
 
@@ -20,8 +20,12 @@ def index():
 
 @app.route("/api/dashboard")
 def dashboard_api():
-    data = get_dashboard_payload()
-    return jsonify(data)
+    try:
+        data = get_dashboard_payload()
+        return jsonify(data)
+    except Exception as exc:  # pragma: no cover - defensive logging
+        current_app.logger.exception("Failed to build dashboard payload: %s", exc)
+        return jsonify({"error": str(exc)}), 500
 
 
 if __name__ == "__main__":
