@@ -1,11 +1,10 @@
 import json
-from collections import Counter, defaultdict
-from datetime import datetime
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 import requests
-from dateutil import parser as date_parser
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config" / "medallion_config.json"
@@ -14,6 +13,7 @@ DISCOVERY_PATH = "/taxii2/"
 ALERTS_API_PATH = "/alerts/"
 ACCEPT_HEADER = "application/taxii+json;version=2.1"
 SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"]
+SEVERITY_RANK = {sev: (len(SEVERITY_ORDER) - idx) for idx, sev in enumerate(SEVERITY_ORDER)}
 
 
 def _load_medallion_config() -> Tuple[str, Tuple[str, str]]:
@@ -97,11 +97,8 @@ def _fetch_objects(collection_info: Dict, auth: Tuple[str, str]) -> List[Dict]:
 
 def _severity_rank(level: str) -> int:
     if not level:
-        return -1
-    try:
-        return SEVERITY_ORDER.index(level.lower())
-    except ValueError:
-        return -1
+        return 0
+    return SEVERITY_RANK.get(level.lower(), 0)
 
 
 def _normalize_severity(indicator: Dict) -> str:
@@ -118,10 +115,17 @@ def _normalize_severity(indicator: Dict) -> str:
 
 def _parse_when(indicator: Dict) -> datetime:
     ts = indicator.get("valid_from") or indicator.get("created")
+    if not ts:
+        return datetime.utcnow().replace(tzinfo=timezone.utc)
     try:
-        return date_parser.parse(ts)
-    except Exception:
-        return datetime.utcnow()
+        if ts.endswith("Z"):
+            ts = ts.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(ts)
+    except ValueError:
+        dt = datetime.utcnow().replace(tzinfo=timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def _build_timeline(evidences: List[Dict]) -> List[Dict]:
@@ -139,7 +143,9 @@ def _build_timeline(evidences: List[Dict]) -> List[Dict]:
 def _summarize_ips(evidences: List[Dict]) -> List[Dict]:
     summary: Dict[str, Dict] = {}
     for evidence in evidences:
-        ip = evidence.get("x_slips_profile_ip") or "Unknown"
+        ip = evidence.get("x_slips_profile_ip")
+        if not ip:
+            continue
         direction = evidence.get("x_slips_attacker_direction")
         victim = evidence.get("x_slips_victim")
         severity = _normalize_severity(evidence)
@@ -164,7 +170,7 @@ def _summarize_ips(evidences: List[Dict]) -> List[Dict]:
 
     return sorted(
         summary.values(),
-        key=lambda item: (item.get("top_rank", -1), item["count"]),
+        key=lambda item: (item.get("top_rank", 0), item["count"]),
         reverse=True,
     )
 
@@ -175,6 +181,9 @@ def _prepare_evidences(objects: List[Dict]) -> List[Dict]:
         if indicator.get("type") != "indicator":
             continue
         severity = _normalize_severity(indicator)
+        dt_obj = _parse_when(indicator)
+        timestamp_raw = indicator.get("valid_from") or indicator.get("created") or dt_obj.isoformat()
+
         evidences.append(
             {
                 "id": indicator.get("x_slips_evidence_id") or indicator.get("id"),
@@ -182,8 +191,8 @@ def _prepare_evidences(objects: List[Dict]) -> List[Dict]:
                 "name": indicator.get("name"),
                 "description": indicator.get("description"),
                 "pattern": indicator.get("pattern"),
-                "created": indicator.get("created"),
-                "valid_from": indicator.get("valid_from"),
+                "timestamp": timestamp_raw,
+                "sort_ts": dt_obj.isoformat(),
                 "severity": severity,
                 "severity_rank": _severity_rank(severity),
                 "profile_ip": indicator.get("x_slips_profile_ip"),
@@ -197,7 +206,10 @@ def _prepare_evidences(objects: List[Dict]) -> List[Dict]:
         )
     return sorted(
         evidences,
-        key=lambda ev: (ev["severity_rank"], ev.get("valid_from") or ev.get("created")),
+        key=lambda ev: (
+            ev["severity_rank"],
+            ev.get("sort_ts"),
+        ),
         reverse=True,
     )
 
@@ -214,10 +226,9 @@ def get_dashboard_payload() -> Dict:
         evidences = _prepare_evidences(objects)
         timeline = _build_timeline(evidences)
         ip_summary = _summarize_ips(evidences)
-
         summary = {
             "total_evidences": len(evidences),
-            "unique_ips": len({e.get("profile_ip") for e in evidences if e.get("profile_ip")}),
+            "unique_ips": len(ip_summary),
             "critical": sum(1 for e in evidences if e["severity"] == "critical"),
             "high": sum(1 for e in evidences if e["severity"] == "high"),
             "collection": collection.get("title") or collection.get("id"),
