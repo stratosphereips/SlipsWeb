@@ -1,4 +1,8 @@
 {
+  "server": {
+    "host": "127.0.0.1",
+    "port": 1234
+  },
   "users": {
       "admin": "changeme_before_installing_a_medallion_server"
   }
