@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 import requests
+from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config" / "medallion_config.json"
@@ -29,7 +30,8 @@ def _load_medallion_config() -> Tuple[str, Tuple[str, str]]:
         raise RuntimeError("No TAXII users defined in medallion_config.json")
 
     username, password = next(iter(users.items()))
-    return base_url, (username, password)
+    max_page_size = config.get("taxii", {}).get("max_page_size", 100)
+    return base_url, (username, password), max_page_size
 
 
 def _discover_api_root(base_url: str, auth: Tuple[str, str]) -> str:
@@ -72,7 +74,21 @@ def _select_collection(api_root: str, auth: Tuple[str, str]) -> Dict:
     return collections[0]
 
 
-def _fetch_objects(collection_info: Dict, auth: Tuple[str, str]) -> List[Dict]:
+def _build_page_url(base_url: str, limit: int, next_token: str = None) -> str:
+    parsed = urlparse(base_url)
+    params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    params["limit"] = str(limit)
+    if next_token:
+        params["next"] = next_token
+    else:
+        params.pop("next", None)
+    new_query = urlencode(params)
+    return urlunparse(parsed._replace(query=new_query))
+
+
+def _fetch_objects(
+    collection_info: Dict, auth: Tuple[str, str], max_page_size: int
+) -> List[Dict]:
     objects_url = collection_info["objects"] if "objects" in collection_info else None
     if not objects_url:
         objects_url = f"{collection_info['url']}objects/" if collection_info.get("url") else None
@@ -85,14 +101,22 @@ def _fetch_objects(collection_info: Dict, auth: Tuple[str, str]) -> List[Dict]:
     if not objects_url:
         raise RuntimeError("Unable to determine objects URL for the TAXII collection")
 
-    response = requests.get(
-        objects_url,
-        headers={"Accept": ACCEPT_HEADER},
-        auth=auth,
-        timeout=10,
-    )
-    response.raise_for_status()
-    return response.json().get("objects", [])
+    headers = {"Accept": ACCEPT_HEADER}
+    collected: List[Dict] = []
+    page_url = _build_page_url(objects_url, max_page_size)
+    safety = 0
+    while page_url and safety < 1000:
+        response = requests.get(page_url, headers=headers, auth=auth, timeout=10)
+        response.raise_for_status()
+        payload = response.json()
+        collected.extend(payload.get("objects", []))
+        next_token = payload.get("next")
+        if next_token:
+            page_url = _build_page_url(objects_url, max_page_size, next_token)
+        else:
+            page_url = None
+        safety += 1
+    return collected
 
 
 def _severity_rank(level: str) -> int:
@@ -216,12 +240,12 @@ def _prepare_evidences(objects: List[Dict]) -> List[Dict]:
 
 def get_dashboard_payload() -> Dict:
     try:
-        base_url, auth = _load_medallion_config()
+        base_url, auth, page_size = _load_medallion_config()
         api_root = _discover_api_root(base_url, auth)
         collection = _select_collection(api_root, auth)
         collection.setdefault("api_root", api_root)
         collection.setdefault("url", f"{api_root}collections/{collection.get('id')}/")
-        objects = _fetch_objects(collection, auth)
+        objects = _fetch_objects(collection, auth, page_size)
 
         evidences = _prepare_evidences(objects)
         timeline = _build_timeline(evidences)
