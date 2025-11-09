@@ -33,7 +33,6 @@ In there you need to check
 - Change the password of the Medallion server. And be sure the same password is in the `config/slips.yaml` file of Slips
 - Change the port if you dont want to use 1234
 
-
 ## 3. Run the medallion server
 
 The Medallion server run in the same computer as Slips, and then Medallion can listen in localhost.
