@@ -1,0 +1,249 @@
+import json
+from collections import Counter, defaultdict
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+import requests
+from dateutil import parser as date_parser
+
+BASE_DIR = Path(__file__).resolve().parent
+CONFIG_PATH = BASE_DIR / "config" / "medallion_config.json"
+DEFAULT_COLLECTION_TITLE = "Alerts"
+DISCOVERY_PATH = "/taxii2/"
+ALERTS_API_PATH = "/alerts/"
+ACCEPT_HEADER = "application/taxii+json;version=2.1"
+SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"]
+
+
+def _load_medallion_config() -> Tuple[str, Tuple[str, str]]:
+    with CONFIG_PATH.open() as config_file:
+        config = json.load(config_file)
+
+    host = config["server"].get("host", "127.0.0.1")
+    port = config["server"].get("port", 1234)
+    base_url = f"http://{host}:{port}".rstrip("/")
+
+    users = config.get("users", {})
+    if not users:
+        raise RuntimeError("No TAXII users defined in medallion_config.json")
+
+    username, password = next(iter(users.items()))
+    return base_url, (username, password)
+
+
+def _discover_api_root(base_url: str, auth: Tuple[str, str]) -> str:
+    discovery_url = f"{base_url}{DISCOVERY_PATH}"
+    response = requests.get(
+        discovery_url,
+        headers={"Accept": ACCEPT_HEADER},
+        auth=auth,
+        timeout=10,
+    )
+    response.raise_for_status()
+    api_roots = response.json().get("api_roots", [])
+
+    if not api_roots:
+        raise RuntimeError("No API roots advertised by TAXII discovery endpoint")
+
+    for root in api_roots:
+        if root.rstrip("/").endswith(ALERTS_API_PATH.rstrip("/")):
+            return root.rstrip("/") + "/"
+
+    return api_roots[0].rstrip("/") + "/"
+
+
+def _select_collection(api_root: str, auth: Tuple[str, str]) -> Dict:
+    response = requests.get(
+        f"{api_root}collections/",
+        headers={"Accept": ACCEPT_HEADER},
+        auth=auth,
+        timeout=10,
+    )
+    response.raise_for_status()
+    collections = response.json().get("collections", [])
+    if not collections:
+        raise RuntimeError("No collections available on TAXII server")
+
+    for collection in collections:
+        title = collection.get("title", "").lower()
+        if DEFAULT_COLLECTION_TITLE.lower() in title:
+            return collection
+    return collections[0]
+
+
+def _fetch_objects(collection_info: Dict, auth: Tuple[str, str]) -> List[Dict]:
+    objects_url = collection_info["objects"] if "objects" in collection_info else None
+    if not objects_url:
+        objects_url = f"{collection_info['url']}objects/" if collection_info.get("url") else None
+    if not objects_url:
+        collection_id = collection_info.get("id")
+        api_root = collection_info.get("api_root")
+        if api_root and collection_id:
+            objects_url = f"{api_root}collections/{collection_id}/objects/"
+
+    if not objects_url:
+        raise RuntimeError("Unable to determine objects URL for the TAXII collection")
+
+    response = requests.get(
+        objects_url,
+        headers={"Accept": ACCEPT_HEADER},
+        auth=auth,
+        timeout=10,
+    )
+    response.raise_for_status()
+    return response.json().get("objects", [])
+
+
+def _severity_rank(level: str) -> int:
+    if not level:
+        return -1
+    try:
+        return SEVERITY_ORDER.index(level.lower())
+    except ValueError:
+        return -1
+
+
+def _normalize_severity(indicator: Dict) -> str:
+    level = indicator.get("x_slips_threat_level")
+    if level:
+        return str(level).lower()
+    labels = indicator.get("labels") or []
+    for label in labels:
+        lower = label.lower()
+        if lower in SEVERITY_ORDER:
+            return lower
+    return "info"
+
+
+def _parse_when(indicator: Dict) -> datetime:
+    ts = indicator.get("valid_from") or indicator.get("created")
+    try:
+        return date_parser.parse(ts)
+    except Exception:
+        return datetime.utcnow()
+
+
+def _build_timeline(evidences: List[Dict]) -> List[Dict]:
+    bucket = Counter()
+    for evidence in evidences:
+        dt = _parse_when(evidence)
+        minute = dt.replace(second=0, microsecond=0).isoformat()
+        bucket[minute] += 1
+    return [
+        {"timestamp": ts, "count": bucket[ts]}
+        for ts in sorted(bucket.keys())
+    ]
+
+
+def _summarize_ips(evidences: List[Dict]) -> List[Dict]:
+    summary: Dict[str, Dict] = {}
+    for evidence in evidences:
+        ip = evidence.get("x_slips_profile_ip") or "Unknown"
+        direction = evidence.get("x_slips_attacker_direction")
+        victim = evidence.get("x_slips_victim")
+        severity = _normalize_severity(evidence)
+        rank = _severity_rank(severity)
+
+        if ip not in summary:
+            summary[ip] = {
+                "ip": ip,
+                "count": 0,
+                "direction": direction,
+                "victim": victim,
+                "top_severity": severity,
+                "top_rank": rank,
+            }
+        entry = summary[ip]
+        entry["count"] += 1
+        entry["direction"] = direction or entry["direction"]
+        entry["victim"] = victim or entry["victim"]
+        if rank > entry.get("top_rank", -1):
+            entry["top_severity"] = severity
+            entry["top_rank"] = rank
+
+    return sorted(
+        summary.values(),
+        key=lambda item: (item.get("top_rank", -1), item["count"]),
+        reverse=True,
+    )
+
+
+def _prepare_evidences(objects: List[Dict]) -> List[Dict]:
+    evidences = []
+    for indicator in objects:
+        if indicator.get("type") != "indicator":
+            continue
+        severity = _normalize_severity(indicator)
+        evidences.append(
+            {
+                "id": indicator.get("x_slips_evidence_id") or indicator.get("id"),
+                "stix_id": indicator.get("id"),
+                "name": indicator.get("name"),
+                "description": indicator.get("description"),
+                "pattern": indicator.get("pattern"),
+                "created": indicator.get("created"),
+                "valid_from": indicator.get("valid_from"),
+                "severity": severity,
+                "severity_rank": _severity_rank(severity),
+                "profile_ip": indicator.get("x_slips_profile_ip"),
+                "direction": indicator.get("x_slips_attacker_direction"),
+                "victim": indicator.get("x_slips_victim"),
+                "flow_uids": indicator.get("x_slips_flow_uids", []),
+                "dst_port": indicator.get("x_slips_dst_port"),
+                "src_port": indicator.get("x_slips_src_port"),
+                "labels": indicator.get("labels", []),
+            }
+        )
+    return sorted(
+        evidences,
+        key=lambda ev: (ev["severity_rank"], ev.get("valid_from") or ev.get("created")),
+        reverse=True,
+    )
+
+
+def get_dashboard_payload() -> Dict:
+    try:
+        base_url, auth = _load_medallion_config()
+        api_root = _discover_api_root(base_url, auth)
+        collection = _select_collection(api_root, auth)
+        collection.setdefault("api_root", api_root)
+        collection.setdefault("url", f"{api_root}collections/{collection.get('id')}/")
+        objects = _fetch_objects(collection, auth)
+
+        evidences = _prepare_evidences(objects)
+        timeline = _build_timeline(evidences)
+        ip_summary = _summarize_ips(evidences)
+
+        summary = {
+            "total_evidences": len(evidences),
+            "unique_ips": len({e.get("profile_ip") for e in evidences if e.get("profile_ip")}),
+            "critical": sum(1 for e in evidences if e["severity"] == "critical"),
+            "high": sum(1 for e in evidences if e["severity"] == "high"),
+            "collection": collection.get("title") or collection.get("id"),
+        }
+
+        return {
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "timeline": timeline,
+            "ip_summary": ip_summary,
+            "evidences": evidences,
+            "summary": summary,
+            "severity_order": SEVERITY_ORDER,
+        }
+    except Exception as exc:  # pragma: no cover - defensive path
+        return {
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "timeline": [],
+            "ip_summary": [],
+            "evidences": [],
+            "summary": {
+                "total_evidences": 0,
+                "unique_ips": 0,
+                "critical": 0,
+                "high": 0,
+                "collection": "Unavailable",
+            },
+            "severity_order": SEVERITY_ORDER,
+            "error": str(exc),
+        }
