@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Slips Security Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js" defer></script>
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="page-header">
+        <div>
+          <p class="eyebrow">Stratosphere Linux IPS</p>
+          <h1>Security Evidence Dashboard</h1>
+          <p class="subtitle">Live overview of indicators received via TAXII</p>
+        </div>
+        <div class="timestamp">
+          Last update: <span id="lastUpdated">--</span>
+        </div>
+      </header>
+
+      <section class="stat-grid" id="summaryCards">
+        <article class="stat-card">
+          <p>Total Evidences</p>
+          <h2 id="statTotal">0</h2>
+        </article>
+        <article class="stat-card">
+          <p>Critical</p>
+          <h2 id="statCritical">0</h2>
+        </article>
+        <article class="stat-card">
+          <p>High</p>
+          <h2 id="statHigh">0</h2>
+        </article>
+        <article class="stat-card">
+          <p>Unique Sources</p>
+          <h2 id="statIPs">0</h2>
+        </article>
+      </section>
+
+      <section class="layout-grid">
+        <article class="panel">
+          <div class="panel-header">
+            <div>
+              <h3>Evidence Volume</h3>
+              <p class="panel-subtitle">Counts per minute</p>
+            </div>
+            <span class="badge" id="collectionName">Collection</span>
+          </div>
+          <canvas id="timelineChart" height="140"></canvas>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <h3>Suspect IP Addresses</h3>
+            <p class="panel-subtitle">Click to filter related evidences</p>
+          </div>
+          <ul class="ip-list" id="ipList"></ul>
+        </article>
+
+        <article class="panel panel-wide">
+          <div class="panel-header">
+            <div>
+              <h3>Evidences by Severity</h3>
+              <p class="panel-subtitle">Ordered by risk</p>
+            </div>
+            <div class="auto-refresh">Auto refresh <span id="refreshInterval">15s</span></div>
+          </div>
+          <div class="table-wrapper">
+            <table class="evidence-table" id="evidenceTable">
+              <thead>
+                <tr>
+                  <th>Severity</th>
+                  <th>When</th>
+                  <th>Name</th>
+                  <th>Responsible IP</th>
+                  <th>Victim</th>
+                  <th>Ports</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="panel panel-wide" id="detailPanel">
+          <div class="panel-header">
+            <h3>Details</h3>
+          </div>
+          <div class="detail-content" id="detailContent">
+            <p>Select an IP or an evidence to inspect its context.</p>
+          </div>
+        </article>
+      </section>
+    </div>
+  </body>
+</html>
