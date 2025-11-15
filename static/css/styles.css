@@ -22,12 +22,14 @@ body {
   background: radial-gradient(circle at top, #1a2543, var(--bg));
   color: var(--text);
   min-height: 100vh;
+  overflow-x: hidden;
 }
 
 .app-shell {
-  width: min(1400px, 96vw);
+  width: 100%;
+  max-width: 100%;
   margin: 0 auto;
-  padding: 2rem 0 4rem;
+  padding: 2rem 3vw 4rem;
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
@@ -90,7 +92,7 @@ body {
 
 .main-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: minmax(0, 2.2fr) minmax(320px, 0.8fr);
   gap: 1.5rem;
 }
 
@@ -122,6 +124,44 @@ body {
   gap: 0.75rem;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.filter-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.severity-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.severity-btn {
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 0.25rem 0.9rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.1s ease, color 0.1s ease;
+}
+
+.severity-btn.active {
+  background: rgba(56, 189, 248, 0.2);
+  border-color: rgba(56, 189, 248, 0.6);
+  color: var(--text);
+}
+
 .panel-header h3 {
   margin: 0;
   font-size: 1.1rem;
@@ -148,7 +188,7 @@ body {
 }
 
 .table-wrapper {
-  overflow-x: auto;
+  overflow-x: visible;
   min-height: 320px;
 }
 
@@ -189,7 +229,12 @@ body {
 }
 
 .evidence-table tr:hover {
-  background: rgba(148, 163, 184, 0.08);
+ 	background: rgba(148, 163, 184, 0.08);
+}
+
+.evidence-table td.name-cell {
+  max-width: 320px;
+  white-space: normal;
 }
 
 .sev-chip {
@@ -417,6 +462,14 @@ body {
 }
 
 .muted { color: var(--muted); }
+
+.group-row td {
+  background: rgba(56, 189, 248, 0.08);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid rgba(56, 189, 248, 0.3);
+}
 
 @media (max-width: 1024px) {
   .main-grid {
