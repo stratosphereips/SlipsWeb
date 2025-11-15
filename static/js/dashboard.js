@@ -474,7 +474,7 @@ function buildEvidenceDetail(ev) {
     <p><strong>Victim:</strong> ${ev.victim || "--"}</p>
     <p><strong>Ports:</strong> ${ev.src_port || "?"} → ${ev.dst_port || "?"}</p>
     <p><strong>Created:</strong> ${formatDateTime(ev.createdDate)}</p>
-    <p><strong>Modified:</strong> ${formatDateTime(ev.modifiedDate)}</p>
+    <p><strong>Updated:</strong> ${formatDateTime(ev.modifiedDate)}</p>
     <p><strong>Observed:</strong> ${formatDateTime(ev.timestampDate)}</p>
     <p><strong>Severity:</strong> ${ev.severity}</p>
     <p><strong>Time Diff:</strong> ${formatTimeDiff(ev)} (flow vs. evidence)</p>
@@ -589,6 +589,11 @@ function formatTimeDiff(ev) {
 }
 
 function init() {
+  const observedHeader = document.querySelector('th[data-sort="when"]');
+  if (observedHeader) {
+    observedHeader.textContent = "Observed";
+    observedHeader.title = "Flow observed timestamp";
+  }
   document
     .getElementById("clearIpFilter")
     ?.addEventListener("click", () => {
