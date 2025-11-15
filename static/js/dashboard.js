@@ -1,4 +1,6 @@
 const REFRESH_MS = 15000;
+const SEVERITY_LEVELS = ["critical", "high", "medium", "low", "info"];
+
 const state = {
   evidences: [],
   filtered: [],
@@ -8,6 +10,8 @@ const state = {
   sort: { key: "severity_rank", dir: "desc" },
   ipFilter: null,
   dayFilter: null,
+  severityFilter: new Set(),
+  groupByIp: false,
 };
 
 let timelineChart;
@@ -64,10 +68,21 @@ function decorateEvidences(raw) {
   return raw.map((ev) => {
     const timestamp = ev.timestamp || ev.valid_from || ev.created;
     const timestampDate = timestamp ? new Date(timestamp) : null;
+    const createdDate = ev.created ? new Date(ev.created) : null;
+    const modifiedDate = ev.modified ? new Date(ev.modified) : null;
+    const timeDiffSeconds =
+      typeof ev.time_diff_seconds === "number" && Number.isFinite(ev.time_diff_seconds)
+        ? ev.time_diff_seconds
+      : createdDate && timestampDate
+        ? Math.round(Math.abs((createdDate - timestampDate) / 1000))
+        : null;
     return {
       ...ev,
       timestamp,
       timestampDate,
+      createdDate,
+      modifiedDate,
+      time_diff_seconds: timeDiffSeconds,
       localDate: timestampDate ? localDateKey(timestampDate) : null,
     };
   });
@@ -78,7 +93,9 @@ function updateStats(summary) {
     summary.total_evidences ?? 0;
   document.getElementById("statCritical").textContent = summary.critical ?? 0;
   document.getElementById("statHigh").textContent = summary.high ?? 0;
-  document.getElementById("statIPs").textContent = summary.unique_ips ?? 0;
+  const uniqueIps =
+    (state.ipSummary && state.ipSummary.length) ?? summary.unique_ips ?? 0;
+  document.getElementById("statIPs").textContent = uniqueIps;
 }
 
 function buildTimelineFromEvidences(evidences) {
@@ -143,6 +160,9 @@ function applyFilters() {
   if (state.dayFilter) {
     filtered = filtered.filter((ev) => ev.localDate === state.dayFilter);
   }
+  if (state.severityFilter.size) {
+    filtered = filtered.filter((ev) => state.severityFilter.has(ev.severity));
+  }
   state.filtered = sortData(filtered);
   renderEvidenceTable(state.filtered);
   updateTimelineChart(buildTimelineFromEvidences(state.filtered.length ? state.filtered : state.evidences));
@@ -158,6 +178,10 @@ function sortData(data) {
         return ev.severity_rank;
       case "when":
         return ev.timestampDate?.getTime() || 0;
+      case "created":
+        return ev.createdDate?.getTime() || 0;
+      case "modified":
+        return ev.modifiedDate?.getTime() || 0;
       case "name":
         return ev.name || "";
       case "profile_ip":
@@ -166,6 +190,12 @@ function sortData(data) {
         return ev.victim || "";
       case "ports":
         return `${ev.src_port || ""}-${ev.dst_port || ""}`;
+      case "time_diff": {
+        const diff = getTimeDiffSeconds(ev);
+        return Number.isFinite(diff) ? diff : Number.MAX_SAFE_INTEGER;
+      }
+      case "ti_source":
+        return ev.ti_source || "";
       default:
         return ev[key] || 0;
     }
@@ -223,21 +253,60 @@ function renderIpList(list) {
 function renderEvidenceTable(evidences) {
   const tbody = document.querySelector("#evidenceTable tbody");
   tbody.innerHTML = "";
-  evidences.forEach((ev) => {
+  const columnCount =
+    document.querySelectorAll("#evidenceTable thead th").length || 1;
+
+  if (!evidences.length) {
+    const empty = document.createElement("tr");
+    empty.innerHTML = `<td colspan="${columnCount}" class="muted">No evidences match the current filters.</td>`;
+    tbody.appendChild(empty);
+    return;
+  }
+
+  const addRow = (ev) => {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td><span class="${severityClass(ev.severity)}">${
-      ev.severity
-    }</span></td>
-      <td>${formatDateTime(ev.timestampDate)}</td>
-      <td>${ev.name || "Unnamed"}</td>
+        ev.severity
+      }</span></td>
+      <td>${formatDateTime(ev.createdDate)}</td>
+      <td>${formatDateTime(ev.modifiedDate)}</td>
+      <td class="name-cell">${ev.name || "Unnamed"}</td>
       <td>${ev.profile_ip || "--"}</td>
       <td>${ev.victim || "--"}</td>
-      <td>${ev.src_port || "?"} → ${ev.dst_port || "?"}</td>`;
+      <td>${ev.src_port || "?"} → ${ev.dst_port || "?"}</td>
+      <td>${formatTimeDiff(ev)}</td>
+      <td>${ev.ti_source || "—"}</td>`;
     tr.addEventListener("click", () => {
       openDrawer(ev.name || "Evidence", buildEvidenceDetail(ev));
     });
     tbody.appendChild(tr);
+  };
+
+  if (!state.groupByIp) {
+    evidences.forEach(addRow);
+    return;
+  }
+
+  const groups = new Map();
+  evidences.forEach((ev) => {
+    const key = ev.profile_ip || "Unassigned";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(ev);
+  });
+
+  const ordered = Array.from(groups.entries()).sort(
+    (a, b) => b[1].length - a[1].length,
+  );
+
+  ordered.forEach(([ip, list]) => {
+    const header = document.createElement("tr");
+    header.className = "group-row";
+    header.innerHTML = `<td colspan="${columnCount}">
+      ${ip} • ${list.length} evidence${list.length === 1 ? "" : "s"}
+    </td>`;
+    tbody.appendChild(header);
+    list.forEach(addRow);
   });
 }
 
@@ -358,6 +427,13 @@ function updateFilterBadge() {
   const filters = [];
   if (state.ipFilter) filters.push(`Host: ${state.ipFilter}`);
   if (state.dayFilter) filters.push(`Day: ${formatBadgeDate(state.dayFilter)}`);
+  if (state.severityFilter.size) {
+    filters.push(
+      `Severity: ${Array.from(state.severityFilter)
+        .map((sev) => sev[0].toUpperCase() + sev.slice(1))
+        .join(", ")}`,
+    );
+  }
   badge.textContent = filters.length ? filters.join(" • ") : "All activity";
 }
 
@@ -386,6 +462,9 @@ function buildEvidenceDetail(ev) {
   const flows = ev.flow_uids?.length
     ? ev.flow_uids.map((uid) => `<span class="flow-pill">${uid}</span>`).join(" ")
     : "<span class='muted'>No Flow IDs</span>";
+  const tiMarkup = ev.ti_source
+    ? `<p><strong>Threat Intel Source:</strong> ${ev.ti_source}</p>`
+    : "";
   return `
     <div class="detail-card">
       <h4>${ev.name || "Evidence"}</h4>
@@ -394,8 +473,12 @@ function buildEvidenceDetail(ev) {
     <p><strong>Responsible IP:</strong> ${ev.profile_ip || "--"} (${ev.direction || "?"})</p>
     <p><strong>Victim:</strong> ${ev.victim || "--"}</p>
     <p><strong>Ports:</strong> ${ev.src_port || "?"} → ${ev.dst_port || "?"}</p>
+    <p><strong>Created:</strong> ${formatDateTime(ev.createdDate)}</p>
+    <p><strong>Modified:</strong> ${formatDateTime(ev.modifiedDate)}</p>
     <p><strong>Observed:</strong> ${formatDateTime(ev.timestampDate)}</p>
     <p><strong>Severity:</strong> ${ev.severity}</p>
+    <p><strong>Time Diff:</strong> ${formatTimeDiff(ev)} (flow vs. evidence)</p>
+    ${tiMarkup}
     <div>
       <strong>Flow UIDs:</strong>
       <div class="flow-list">${flows}</div>
@@ -419,6 +502,90 @@ function initSorting() {
     th.addEventListener("click", () => setSort(th.dataset.sort));
   });
   setSort("severity_rank");
+}
+
+function updateSeverityButtons() {
+  const buttons = document.querySelectorAll("#severityFilters button");
+  if (!buttons.length) return;
+  buttons.forEach((btn) => {
+    const sev = btn.dataset.severity;
+    const active =
+      sev === "all"
+        ? state.severityFilter.size === 0
+        : state.severityFilter.has(sev);
+    btn.classList.toggle("active", active);
+  });
+}
+
+function initSeverityFilters() {
+  const buttons = document.querySelectorAll("#severityFilters button");
+  if (!buttons.length) return;
+  buttons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const sev = btn.dataset.severity;
+      if (sev === "all") {
+        state.severityFilter.clear();
+      } else {
+        if (state.severityFilter.has(sev)) {
+          state.severityFilter.delete(sev);
+        } else {
+          state.severityFilter.add(sev);
+        }
+      }
+      updateSeverityButtons();
+      applyFilters();
+    });
+  });
+  updateSeverityButtons();
+}
+
+function initGroupToggle() {
+  const toggle = document.getElementById("groupByIpToggle");
+  if (!toggle) return;
+  toggle.addEventListener("click", () => {
+    state.groupByIp = !state.groupByIp;
+    toggle.classList.toggle("active", state.groupByIp);
+    toggle.textContent = state.groupByIp ? "Ungroup" : "Group by IP";
+    renderEvidenceTable(state.filtered);
+  });
+}
+
+function getTimeDiffSeconds(ev) {
+  if (typeof ev.time_diff_seconds === "number" && Number.isFinite(ev.time_diff_seconds)) {
+    return ev.time_diff_seconds;
+  }
+  const createdValid =
+    ev.createdDate instanceof Date && !Number.isNaN(ev.createdDate.getTime());
+  const observedValid =
+    ev.timestampDate instanceof Date && !Number.isNaN(ev.timestampDate.getTime());
+  if (createdValid && observedValid) {
+    return Math.round(
+      Math.abs(ev.createdDate.getTime() - ev.timestampDate.getTime()) / 1000,
+    );
+  }
+  return null;
+}
+
+function formatTimeDiff(ev) {
+  const seconds = getTimeDiffSeconds(ev);
+  if (!Number.isFinite(seconds)) return "—";
+  if (seconds === 0) return "0s";
+  const units = [
+    { label: "d", value: 86400 },
+    { label: "h", value: 3600 },
+    { label: "m", value: 60 },
+    { label: "s", value: 1 },
+  ];
+  const parts = [];
+  let remaining = seconds;
+  units.forEach(({ label, value }) => {
+    if (remaining >= value) {
+      const count = Math.floor(remaining / value);
+      remaining %= value;
+      parts.push(`${count}${label}`);
+    }
+  });
+  return parts.slice(0, 2).join(" ") || "0s";
 }
 
 function init() {
@@ -457,6 +624,8 @@ function init() {
     .addEventListener("click", closeDrawer);
 
   initSorting();
+  initSeverityFilters();
+  initGroupToggle();
   fetchDashboard();
   setInterval(fetchDashboard, REFRESH_MS);
 }
