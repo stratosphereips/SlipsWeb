@@ -1,8 +1,8 @@
 import json
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import requests
 from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse
@@ -137,19 +137,27 @@ def _normalize_severity(indicator: Dict) -> str:
     return "info"
 
 
-def _parse_when(indicator: Dict) -> datetime:
-    ts = indicator.get("valid_from") or indicator.get("created")
-    if not ts:
-        return datetime.utcnow().replace(tzinfo=timezone.utc)
+def _parse_iso_datetime(timestamp: str) -> Optional[datetime]:
+    if not timestamp:
+        return None
+    ts = timestamp
+    if ts.endswith("Z"):
+        ts = f"{ts[:-1]}+00:00"
     try:
-        if ts.endswith("Z"):
-            ts = ts.replace("Z", "+00:00")
         dt = datetime.fromisoformat(ts)
     except ValueError:
-        dt = datetime.utcnow().replace(tzinfo=timezone.utc)
+        return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def _parse_when(indicator: Dict) -> datetime:
+    ts = indicator.get("valid_from") or indicator.get("created")
+    parsed = _parse_iso_datetime(ts)
+    if parsed is not None:
+        return parsed
+    return datetime.utcnow().replace(tzinfo=timezone.utc)
 
 
 def _build_timeline(evidences: List[Dict]) -> List[Dict]:
@@ -207,6 +215,16 @@ def _prepare_evidences(objects: List[Dict]) -> List[Dict]:
         severity = _normalize_severity(indicator)
         dt_obj = _parse_when(indicator)
         timestamp_raw = indicator.get("valid_from") or indicator.get("created") or dt_obj.isoformat()
+        ti_source = indicator.get("x_slips_attacker_ti")
+        if isinstance(ti_source, list):
+            ti_source = ", ".join(str(entry) for entry in ti_source)
+        profile_ip = indicator.get("x_slips_profile_ip")
+        victim_ip = indicator.get("x_slips_victim")
+        created_ts = indicator.get("created")
+        created_dt = _parse_iso_datetime(created_ts)
+        time_diff_seconds = None
+        if created_dt is not None and dt_obj is not None:
+            time_diff_seconds = int(round(abs((created_dt - dt_obj).total_seconds())))
 
         evidences.append(
             {
@@ -219,9 +237,13 @@ def _prepare_evidences(objects: List[Dict]) -> List[Dict]:
                 "sort_ts": dt_obj.isoformat(),
                 "severity": severity,
                 "severity_rank": _severity_rank(severity),
-                "profile_ip": indicator.get("x_slips_profile_ip"),
+                "profile_ip": profile_ip,
                 "direction": indicator.get("x_slips_attacker_direction"),
-                "victim": indicator.get("x_slips_victim"),
+                "victim": victim_ip,
+                "created": indicator.get("created"),
+                "modified": indicator.get("modified"),
+                "time_diff_seconds": time_diff_seconds,
+                "ti_source": ti_source,
                 "flow_uids": indicator.get("x_slips_flow_uids", []),
                 "dst_port": indicator.get("x_slips_dst_port"),
                 "src_port": indicator.get("x_slips_src_port"),
