@@ -270,7 +270,7 @@ function renderEvidenceTable(evidences) {
         ev.severity
       }</span></td>
       <td>${formatDateTime(ev.createdDate)}</td>
-      <td>${formatDateTime(ev.modifiedDate)}</td>
+      <td>${formatDateTime(ev.timestampDate)}</td>
       <td class="name-cell">${ev.name || "Unnamed"}</td>
       <td>${ev.profile_ip || "--"}</td>
       <td>${ev.victim || "--"}</td>
