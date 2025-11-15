@@ -61,8 +61,21 @@
                   Ordered by risk • <span id="activeFilters">All activity</span>
                 </p>
               </div>
-              <div class="auto-refresh">
-                Auto refresh <span id="refreshInterval">15s</span>
+              <div class="header-actions">
+                <div class="auto-refresh">
+                  Auto refresh <span id="refreshInterval">15s</span>
+                </div>
+                <button class="ghost" id="groupByIpToggle">Group by IP</button>
+              </div>
+            </div>
+            <div class="filter-toolbar">
+              <div class="severity-buttons" id="severityFilters">
+                <button type="button" data-severity="all" class="severity-btn active">All</button>
+                <button type="button" data-severity="critical" class="severity-btn">Critical</button>
+                <button type="button" data-severity="high" class="severity-btn">High</button>
+                <button type="button" data-severity="medium" class="severity-btn">Medium</button>
+                <button type="button" data-severity="low" class="severity-btn">Low</button>
+                <button type="button" data-severity="info" class="severity-btn">Info</button>
               </div>
             </div>
             <div class="table-wrapper">
@@ -70,11 +83,14 @@
                 <thead>
                   <tr>
                     <th data-sort="severity_rank">Severity</th>
-                    <th data-sort="when">When</th>
+                    <th data-sort="created">Created</th>
+                    <th data-sort="modified">Modified</th>
                     <th data-sort="name">Name</th>
                     <th data-sort="profile_ip">Responsible IP</th>
                     <th data-sort="victim">Victim</th>
                     <th data-sort="ports">Ports</th>
+                    <th data-sort="time_diff" title="Time difference between flow and evidence">Time Diff</th>
+                    <th data-sort="ti_source">TI Source</th>
                   </tr>
                 </thead>
                 <tbody></tbody>
