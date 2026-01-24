@@ -86,10 +86,8 @@ def _build_page_url(base_url: str, limit: int, next_token: str = None) -> str:
     return urlunparse(parsed._replace(query=new_query))
 
 
-def _fetch_objects(
-    collection_info: Dict, auth: Tuple[str, str], max_page_size: int
-) -> List[Dict]:
-    objects_url = collection_info["objects"] if "objects" in collection_info else None
+def _resolve_objects_url(collection_info: Dict) -> str:
+    objects_url = collection_info.get("objects")
     if not objects_url:
         objects_url = f"{collection_info['url']}objects/" if collection_info.get("url") else None
     if not objects_url:
@@ -100,6 +98,13 @@ def _fetch_objects(
 
     if not objects_url:
         raise RuntimeError("Unable to determine objects URL for the TAXII collection")
+    return objects_url
+
+
+def _fetch_objects(
+    collection_info: Dict, auth: Tuple[str, str], max_page_size: int
+) -> List[Dict]:
+    objects_url = _resolve_objects_url(collection_info)
 
     headers = {"Accept": ACCEPT_HEADER}
     collected: List[Dict] = []
@@ -304,3 +309,33 @@ def get_dashboard_payload() -> Dict:
             "severity_order": SEVERITY_ORDER,
             "error": str(exc),
         }
+
+
+def clear_alerts_collection() -> Dict[str, object]:
+    base_url, auth, page_size = _load_medallion_config()
+    api_root = _discover_api_root(base_url, auth)
+    collection = _select_collection(api_root, auth)
+    collection.setdefault("api_root", api_root)
+    collection.setdefault("url", f"{api_root}collections/{collection.get('id')}/")
+
+    objects = _fetch_objects(collection, auth, page_size)
+    object_ids = {obj.get("id") for obj in objects if obj.get("id")}
+    objects_url = _resolve_objects_url(collection).rstrip("/")
+
+    deleted = 0
+    for object_id in object_ids:
+        response = requests.delete(
+            f"{objects_url}/{object_id}/",
+            headers={"Accept": ACCEPT_HEADER},
+            auth=auth,
+            timeout=10,
+        )
+        if response.status_code == 404:
+            continue
+        response.raise_for_status()
+        deleted += 1
+
+    return {
+        "deleted": deleted,
+        "collection": collection.get("title") or collection.get("id"),
+    }
