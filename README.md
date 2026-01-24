@@ -124,6 +124,23 @@ container.
      slipsweb
    ```
 
+### Count Medallion objects
+
+Use the helper script to count how many STIX objects are currently stored in
+the Alerts collection:
+
+```bash
+python utils/count_medallion_objects.py \
+  --host 127.0.0.1 \
+  --port 1234 \
+  --user admin \
+  --password changeme_before_installing_a_medallion_server \
+  --collection collection--slips-alerts
+```
+
+If you run it from outside the container, replace `127.0.0.1` with the host/IP
+where you published port 1234.
+
 The Flask UI is now reachable from a browser at <http://localhost:5000> (or the
 host IP you used with `-p`). Point your external Slips deployment to the TAXII
 endpoint at `http://<host-ip>:1234` so it can push alerts into the collections
