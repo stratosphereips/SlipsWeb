@@ -111,6 +111,19 @@ container.
    The `-d` flag detaches from the container so your terminal remains free; use
    `docker logs -f slipsweb` to watch its output.
 
+   To log every request hitting the Medallion TAXII server, enable access
+   logging when you start the container:
+
+   ```bash
+   docker run -d --rm \
+     --name slipsweb \
+     -p 1234:1234 \
+     -p 5000:5000 \
+     -e MEDALLION_ACCESS_LOG=1 \
+     -v "$(pwd)/config:/app/config" \
+     slipsweb
+   ```
+
 The Flask UI is now reachable from a browser at <http://localhost:5000> (or the
 host IP you used with `-p`). Point your external Slips deployment to the TAXII
 endpoint at `http://<host-ip>:1234` so it can push alerts into the collections
