@@ -53,7 +53,8 @@
             "can_read": true,
             "can_write": true,
             "media_types": ["application/stix+json;version=2.1"],
-            "objects": []
+            "objects": [],
+            "manifest": []
             }
         ]
     }
