@@ -2,7 +2,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template, current_app
 
-from dashboard_data import get_dashboard_payload
+from dashboard_data import clear_alerts_collection, get_dashboard_payload
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -25,6 +25,16 @@ def dashboard_api():
         return jsonify(data)
     except Exception as exc:  # pragma: no cover - defensive logging
         current_app.logger.exception("Failed to build dashboard payload: %s", exc)
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/alerts/clear", methods=["POST"])
+def clear_alerts():
+    try:
+        data = clear_alerts_collection()
+        return jsonify(data)
+    except Exception as exc:  # pragma: no cover - defensive logging
+        current_app.logger.exception("Failed to clear TAXII data: %s", exc)
         return jsonify({"error": str(exc)}), 500
 
 
