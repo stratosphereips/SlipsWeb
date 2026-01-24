@@ -437,6 +437,39 @@ function updateFilterBadge() {
   badge.textContent = filters.length ? filters.join(" • ") : "All activity";
 }
 
+async function clearMedallionData() {
+  const button = document.getElementById("clearMedallion");
+  if (!button || button.disabled) return;
+  const confirmed = window.confirm(
+    "Clear all alerts from the TAXII server? This cannot be undone.",
+  );
+  if (!confirmed) return;
+
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "Clearing...";
+
+  try {
+    const response = await fetch("/api/alerts/clear", { method: "POST" });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || "Failed to clear alerts");
+    }
+    const deleted = payload.deleted ?? 0;
+    button.textContent = `Cleared ${deleted}`;
+    await fetchDashboard();
+    setTimeout(() => {
+      button.textContent = originalText;
+      button.disabled = false;
+    }, 2000);
+  } catch (error) {
+    console.error(error);
+    button.textContent = originalText;
+    button.disabled = false;
+    alert(error.message || "Failed to clear alerts");
+  }
+}
+
 function buildIpDetail(ipEntry) {
   if (!ipEntry) return "<p>No details</p>";
   const related = state.evidences.filter((ev) => ev.profile_ip === ipEntry.ip);
@@ -627,6 +660,9 @@ function init() {
   document
     .getElementById("drawerBackdrop")
     .addEventListener("click", closeDrawer);
+  document
+    .getElementById("clearMedallion")
+    ?.addEventListener("click", clearMedallionData);
 
   initSorting();
   initSeverityFilters();
