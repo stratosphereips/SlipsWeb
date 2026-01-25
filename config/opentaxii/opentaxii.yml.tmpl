@@ -1,0 +1,31 @@
+---
+domain: "opentaxii:9000"
+support_basic_auth: true
+return_server_error_details: false
+
+auth_api:
+  class: opentaxii.auth.sqldb.SQLDatabaseAPI
+  parameters:
+    db_connection: "postgresql://{{OPENTAXII_DB_USER}}:{{OPENTAXII_DB_PASSWORD}}@opentaxii-db:5432/opentaxii"
+    create_tables: true
+    secret: "{{OPENTAXII_AUTH_SECRET}}"
+
+taxii1:
+  persistence_api:
+    class: opentaxii.persistence.sqldb.SQLDatabaseAPI
+    parameters:
+      db_connection: "postgresql://{{OPENTAXII_DB_USER}}:{{OPENTAXII_DB_PASSWORD}}@opentaxii-db:5432/opentaxii"
+      create_tables: true
+
+taxii2:
+  persistence_api:
+    class: opentaxii.persistence.sqldb.SQLDatabaseAPI
+    parameters:
+      db_connection: "postgresql://{{OPENTAXII_DB_USER}}:{{OPENTAXII_DB_PASSWORD}}@opentaxii-db:5432/opentaxii"
+      create_tables: true
+  max_content_length: 209715200
+  allow_custom_properties: true
+
+logging:
+  opentaxii: info
+  root: info
