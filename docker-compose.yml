@@ -1,3 +1,5 @@
+name: slipsweb
+
 services:
   # SlipsWeb UI + Medallion TAXII server (profile: medallion)
   slipsweb-medallion:
