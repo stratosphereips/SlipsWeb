@@ -1,0 +1,20 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    MEDALLION_CONFIG=config/medallion_config.json \
+    MEDALLION_HOST=0.0.0.0 \
+    MEDALLION_PORT=1234 \
+    MEDALLION_LOG_LEVEL=INFO
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+EXPOSE 1234
+
+CMD ["python", "medallion_server.py"]
