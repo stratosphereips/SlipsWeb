@@ -109,6 +109,9 @@ container.
    ```
    The `-d` flag detaches from the container so your terminal remains free; use
    `docker logs -f slipsweb` to watch its output.
+   If you mount `-v "$(pwd)/config:/app/config"`, ensure that
+   `medallion_config.json` and `medallion_default_data.json` exist in that
+   folder; otherwise SlipsWeb will fall back to its bundled defaults.
 
    To log every request hitting the Medallion TAXII server, enable access
    logging when you start the container:
