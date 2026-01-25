@@ -154,7 +154,7 @@ function updateStats(summary) {
   document.getElementById("statCritical").textContent = summary.critical ?? 0;
   document.getElementById("statHigh").textContent = summary.high ?? 0;
   const uniqueIps =
-    (state.ipSummary && state.ipSummary.length) ?? summary.unique_ips ?? 0;
+    summary.unique_ips ?? (state.ipSummary ? state.ipSummary.length : 0);
   document.getElementById("statIPs").textContent = uniqueIps;
 }
 
