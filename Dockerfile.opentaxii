@@ -1,0 +1,8 @@
+FROM eclecticiq/opentaxii:latest
+
+COPY opentaxii/entrypoint.sh /usr/local/bin/opentaxii-entrypoint.sh
+
+RUN chmod +x /usr/local/bin/opentaxii-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/opentaxii-entrypoint.sh"]
+CMD ["/venv/bin/gunicorn","opentaxii.http:app","--workers=2","--log-level=info","--log-file=-","--timeout=300","--config=python:opentaxii.http","--bind=0.0.0.0:9000"]
