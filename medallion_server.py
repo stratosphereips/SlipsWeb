@@ -127,14 +127,9 @@ def main() -> None:
     config_path = Path(os.environ.get("MEDALLION_CONFIG", "config/medallion_config.json"))
     if not config_path.is_absolute():
         config_path = (Path.cwd() / config_path).resolve()
-    fallback_config = BASE_DIR / "config_defaults" / "medallion_config.json"
-    if not config_path.exists() and fallback_config.exists():
-        log.warning(
-            "Medallion config missing at %s; using fallback %s",
-            config_path,
-            fallback_config,
-        )
-        config_path = fallback_config
+    if not config_path.exists():
+        log.error("Medallion config missing at %s", config_path)
+        raise FileNotFoundError(f"Missing Medallion config at {config_path}")
     host = os.environ.get("MEDALLION_HOST", "0.0.0.0")
     port = int(os.environ.get("MEDALLION_PORT", "1234"))
     log_level = os.environ.get("MEDALLION_LOG_LEVEL", "INFO").upper()
@@ -150,6 +145,12 @@ def main() -> None:
 
     with config_path.open("r", encoding="utf-8") as config_file:
         configuration = json.load(config_file)
+    env_user = os.getenv("MEDALLION_USERNAME")
+    env_password = os.getenv("MEDALLION_PASSWORD")
+    if env_user and env_password:
+        configuration["users"] = {env_user: env_password}
+    elif not configuration.get("users"):
+        log.warning("No MEDALLION_USERNAME/MEDALLION_PASSWORD provided; authentication will fail.")
     backend_config = configuration.get("backend", {})
     filename = backend_config.get("filename")
     if filename:
@@ -157,14 +158,8 @@ def main() -> None:
         if not candidate.is_absolute():
             candidate = (Path.cwd() / candidate).resolve()
         if not candidate.exists():
-            fallback_data = BASE_DIR / "config_defaults" / "medallion_default_data.json"
-            if fallback_data.exists():
-                log.warning(
-                    "Medallion data file missing at %s; using fallback %s",
-                    candidate,
-                    fallback_data,
-                )
-                backend_config["filename"] = str(fallback_data)
+            log.error("Medallion data file missing at %s", candidate)
+            raise FileNotFoundError(f"Missing Medallion data file at {candidate}")
 
     set_config(application_instance, "users", configuration)
     set_config(application_instance, "taxii", configuration)
@@ -180,7 +175,8 @@ def main() -> None:
     if access_log:
         _setup_access_logging(application_instance)
 
-    application_instance.run(host=host, port=port, debug=False)
+    threaded = _truthy(os.environ.get("MEDALLION_THREADED", ""))
+    application_instance.run(host=host, port=port, debug=False, threaded=threaded)
 
 
 if __name__ == "__main__":
