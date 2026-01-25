@@ -1,0 +1,112 @@
+services:
+  # SlipsWeb UI + Medallion TAXII server (profile: medallion)
+  slipsweb-medallion:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    profiles:
+      - medallion
+    environment:
+      FLASK_RUN_HOST: 0.0.0.0
+      FLASK_RUN_PORT: 5000
+      TAXII_BACKEND: medallion
+      TAXII_BASE_URL: ""
+      TAXII_USERNAME: ${MEDALLION_USERNAME:?Set MEDALLION_USERNAME in .env}
+      TAXII_PASSWORD: ${MEDALLION_PASSWORD:?Set MEDALLION_PASSWORD in .env}
+      TAXII_MAX_PAGE_SIZE: 100
+    ports:
+      - "${SLIPSWEB_HOST_PORT:-5000}:5000"
+    networks:
+      - slipsnet
+    depends_on:
+      - medallion
+
+  # SlipsWeb UI + OpenTAXII (profile: opentaxii)
+  slipsweb-opentaxii:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    profiles:
+      - opentaxii
+    environment:
+      FLASK_RUN_HOST: 0.0.0.0
+      FLASK_RUN_PORT: 5000
+      TAXII_BACKEND: opentaxii
+      TAXII_BASE_URL: "http://opentaxii:9000"
+      TAXII_USERNAME: ${OPENTAXII_TAXII_USERNAME:?Set OPENTAXII_TAXII_USERNAME in .env}
+      TAXII_PASSWORD: ${OPENTAXII_TAXII_PASSWORD:?Set OPENTAXII_TAXII_PASSWORD in .env}
+      TAXII_MAX_PAGE_SIZE: 100
+    ports:
+      - "${SLIPSWEB_HOST_PORT:-5000}:5000"
+    networks:
+      - slipsnet
+    depends_on:
+      - opentaxii
+
+  medallion:
+    build:
+      context: .
+      dockerfile: Dockerfile.medallion
+    profiles:
+      - medallion
+    environment:
+      MEDALLION_CONFIG: /app/config/medallion_config.json
+      MEDALLION_HOST: 0.0.0.0
+      MEDALLION_PORT: 1234
+      MEDALLION_LOG_LEVEL: INFO
+      MEDALLION_ACCESS_LOG: ""
+      MEDALLION_USERNAME: ${MEDALLION_USERNAME:?Set MEDALLION_USERNAME in .env}
+      MEDALLION_PASSWORD: ${MEDALLION_PASSWORD:?Set MEDALLION_PASSWORD in .env}
+    volumes:
+      - ./config:/app/config
+    ports:
+      - "${MEDALLION_HOST_PORT:-1234}:1234"
+    networks:
+      - slipsnet
+
+  opentaxii-db:
+    image: postgres:16
+    profiles:
+      - opentaxii
+    environment:
+      POSTGRES_DB: opentaxii
+      POSTGRES_USER: ${OPENTAXII_DB_USER:?Set OPENTAXII_DB_USER in .env}
+      POSTGRES_PASSWORD: ${OPENTAXII_DB_PASSWORD:?Set OPENTAXII_DB_PASSWORD in .env}
+    volumes:
+      - opentaxii_pgdata:/var/lib/postgresql/data
+    networks:
+      - slipsnet
+
+  opentaxii:
+    build:
+      context: .
+      dockerfile: Dockerfile.opentaxii
+    profiles:
+      - opentaxii
+    depends_on:
+      - opentaxii-db
+    environment:
+      OPENTAXII_DOMAIN: opentaxii:9000
+      OPENTAXII_AUTH_SECRET: ${OPENTAXII_AUTH_SECRET:?Set OPENTAXII_AUTH_SECRET in .env}
+      OPENTAXII_DB_USER: ${OPENTAXII_DB_USER:?Set OPENTAXII_DB_USER in .env}
+      OPENTAXII_DB_PASSWORD: ${OPENTAXII_DB_PASSWORD:?Set OPENTAXII_DB_PASSWORD in .env}
+      OPENTAXII_TAXII_USERNAME: ${OPENTAXII_TAXII_USERNAME:?Set OPENTAXII_TAXII_USERNAME in .env}
+      OPENTAXII_TAXII_PASSWORD: ${OPENTAXII_TAXII_PASSWORD:?Set OPENTAXII_TAXII_PASSWORD in .env}
+      DATABASE_HOST: opentaxii-db
+      DATABASE_NAME: opentaxii
+      DATABASE_USER: ${OPENTAXII_DB_USER:?Set OPENTAXII_DB_USER in .env}
+      DATABASE_PASS: ${OPENTAXII_DB_PASSWORD:?Set OPENTAXII_DB_PASSWORD in .env}
+    volumes:
+      - ./config/opentaxii:/templates:ro
+      - opentaxii_config:/input
+    ports:
+      - "${OPENTAXII_HOST_PORT:-1234}:9000"
+    networks:
+      - slipsnet
+
+networks:
+  slipsnet: {}
+
+volumes:
+  opentaxii_pgdata: {}
+  opentaxii_config: {}
