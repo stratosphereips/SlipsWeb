@@ -2,6 +2,7 @@
 import argparse
 import base64
 import json
+import os
 import sys
 import urllib.request
 from urllib.parse import urlencode
@@ -30,10 +31,14 @@ def main() -> int:
     )
     parser.add_argument("--host", default="127.0.0.1", help="Medallion host")
     parser.add_argument("--port", default="1234", help="Medallion port")
-    parser.add_argument("--user", default="admin", help="Basic auth username")
+    parser.add_argument(
+        "--user",
+        default=os.getenv("MEDALLION_USERNAME") or os.getenv("TAXII_USERNAME") or "admin",
+        help="Basic auth username",
+    )
     parser.add_argument(
         "--password",
-        default="changeme_before_installing_a_medallion_server",
+        default=os.getenv("MEDALLION_PASSWORD") or os.getenv("TAXII_PASSWORD") or "",
         help="Basic auth password",
     )
     parser.add_argument(
@@ -47,6 +52,10 @@ def main() -> int:
     base_url = (
         f"http://{args.host}:{args.port}/alerts/collections/{args.collection}/objects/"
     )
+    if not args.password:
+        print("Missing password. Set MEDALLION_PASSWORD or pass --password.", file=sys.stderr)
+        return 2
+
     headers = {
         "Accept": "application/taxii+json;version=2.1",
         "Authorization": _auth_header(args.user, args.password),
