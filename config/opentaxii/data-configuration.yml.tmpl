@@ -1,0 +1,46 @@
+---
+services:
+  - id: discovery
+    type: discovery
+    address: /services/discovery
+    authentication_required: false
+    description: Discovery service
+
+  - id: collection-management
+    type: collection_management
+    address: /services/collection-management
+    authentication_required: true
+    description: Collection management service
+
+  - id: poll
+    type: poll
+    address: /services/poll
+    authentication_required: true
+    description: Poll service
+
+  - id: inbox
+    type: inbox
+    address: /services/inbox
+    authentication_required: true
+    description: Inbox service
+
+collections:
+  - name: Alerts
+    id: alerts
+    description: Slips alerts collection
+    type: DATA_SET
+    available: true
+    accept_all_content: true
+    supported_content:
+      - application/stix+xml;version=1.2
+      - application/stix+json;version=1.2
+    service_ids:
+      - discovery
+      - collection-management
+      - poll
+      - inbox
+
+accounts:
+  - username: "{{OPENTAXII_TAXII_USERNAME}}"
+    password: "{{OPENTAXII_TAXII_PASSWORD}}"
+    is_admin: true
