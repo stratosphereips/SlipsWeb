@@ -1,4 +1,5 @@
 import json
+import os
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,20 +19,59 @@ SEVERITY_RANK = {sev: (len(SEVERITY_ORDER) - idx) for idx, sev in enumerate(SEVE
 
 
 def _load_medallion_config() -> Tuple[str, Tuple[str, str]]:
-    with CONFIG_PATH.open() as config_file:
-        config = json.load(config_file)
+    config = {}
+    if CONFIG_PATH.exists():
+        with CONFIG_PATH.open() as config_file:
+            config = json.load(config_file)
 
-    host = config["server"].get("host", "127.0.0.1")
-    port = config["server"].get("port", 1234)
-    base_url = f"http://{host}:{port}".rstrip("/")
+    def _env_int(name: str, default: int) -> int:
+        value = os.getenv(name)
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except ValueError:
+            return default
 
-    users = config.get("users", {})
-    if not users:
-        raise RuntimeError("No TAXII users defined in medallion_config.json")
+    env_base_url = os.getenv("TAXII_BASE_URL")
+    env_host = os.getenv("TAXII_HOST")
+    env_port = os.getenv("TAXII_PORT")
+    env_scheme = os.getenv("TAXII_SCHEME", "http")
 
-    username, password = next(iter(users.items()))
-    max_page_size = config.get("taxii", {}).get("max_page_size", 100)
-    return base_url, (username, password), max_page_size
+    base_url = None
+    if env_base_url:
+        base_url = env_base_url.rstrip("/")
+    elif env_host or env_port:
+        host = env_host or "127.0.0.1"
+        port = env_port or "1234"
+        base_url = f"{env_scheme}://{host}:{port}".rstrip("/")
+    else:
+        backend = os.getenv("TAXII_BACKEND", "").lower()
+        if backend == "opentaxii":
+            base_url = "http://opentaxii:9000"
+        elif backend == "medallion":
+            base_url = "http://medallion:1234"
+
+    if not base_url:
+        host = config.get("server", {}).get("host", "127.0.0.1")
+        port = config.get("server", {}).get("port", 1234)
+        base_url = f"http://{host}:{port}".rstrip("/")
+
+    env_user = os.getenv("TAXII_USERNAME") or os.getenv("MEDALLION_USERNAME")
+    env_password = os.getenv("TAXII_PASSWORD") or os.getenv("MEDALLION_PASSWORD")
+    if env_user and env_password:
+        auth = (env_user, env_password)
+    else:
+        users = config.get("users", {})
+        if not users:
+            raise RuntimeError("No TAXII users defined in medallion_config.json")
+        auth = next(iter(users.items()))
+
+    max_page_size = _env_int(
+        "TAXII_MAX_PAGE_SIZE",
+        config.get("taxii", {}).get("max_page_size", 100),
+    )
+    return base_url, auth, max_page_size
 
 
 def _discover_api_root(base_url: str, auth: Tuple[str, str]) -> str:
