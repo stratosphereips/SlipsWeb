@@ -3,25 +3,37 @@ services:
   - id: discovery
     type: discovery
     address: /services/discovery
+    protocol_bindings:
+      - urn:taxii.mitre.org:protocol:http:1.0
     authentication_required: false
     description: Discovery service
 
   - id: collection-management
     type: collection_management
     address: /services/collection-management
+    protocol_bindings:
+      - urn:taxii.mitre.org:protocol:http:1.0
     authentication_required: true
     description: Collection management service
 
   - id: poll
     type: poll
     address: /services/poll
+    protocol_bindings:
+      - urn:taxii.mitre.org:protocol:http:1.0
     authentication_required: true
     description: Poll service
 
   - id: inbox
     type: inbox
     address: /services/inbox
+    protocol_bindings:
+      - urn:taxii.mitre.org:protocol:http:1.0
     authentication_required: true
+    destination_collection_required: true
+    accept_all_content: true
+    supported_content:
+      - urn:stix.mitre.org:xml:1.2
     description: Inbox service
 
 collections:
