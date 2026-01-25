@@ -153,12 +153,10 @@ def test_opentaxii(args: argparse.Namespace) -> int:
     <taxii_11:Inbox_Message
       xmlns:taxii_11=\"http://taxii.mitre.org/messages/taxii_xml_binding-1.1\"
       message_id=\"{uuid.uuid4()}\">
-      <taxii_11:Destination_Collection_Names>
-        <taxii_11:Collection_Name>{args.collection}</taxii_11:Collection_Name>
-      </taxii_11:Destination_Collection_Names>
+      <taxii_11:Destination_Collection_Name>{args.collection}</taxii_11:Destination_Collection_Name>
       <taxii_11:Content_Block>
-        <taxii_11:Content_Binding>urn:stix.mitre.org:xml:1.2</taxii_11:Content_Binding>
-        <taxii_11:Content>
+      <taxii_11:Content_Binding binding_id="urn:stix.mitre.org:xml:1.2" />
+      <taxii_11:Content>
     {stix_xml}
         </taxii_11:Content>
       </taxii_11:Content_Block>
