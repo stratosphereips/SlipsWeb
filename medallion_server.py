@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import time
+import threading
 from pathlib import Path
 from urllib.parse import urljoin, urlparse, urlunparse
 
@@ -10,6 +11,7 @@ from flask import g, request
 from medallion import application_instance, register_blueprints, set_config
 
 LOG_FORMAT = "[%(name)s] [%(levelname)-8s] [%(asctime)s] %(message)s"
+BACKEND_LOCK = threading.RLock()
 
 
 def _truthy(value: str) -> bool:
@@ -89,6 +91,36 @@ def _update_discovery_urls() -> None:
         discovery["default"] = _rebase_url(base_url, default_root)
 
 
+def _wrap_backend_calls() -> None:
+    backend = getattr(application_instance, "medallion_backend", None)
+    if backend is None:
+        return
+
+    def _locked(func):
+        def wrapper(*args, **kwargs):
+            with BACKEND_LOCK:
+                return func(*args, **kwargs)
+
+        return wrapper
+
+    for name in (
+        "get_objects",
+        "add_objects",
+        "get_object",
+        "delete_object",
+        "get_object_manifest",
+        "get_object_versions",
+        "get_collections",
+        "get_collection",
+        "get_status",
+        "get_api_root_information",
+        "server_discovery",
+    ):
+        func = getattr(backend, name, None)
+        if callable(func):
+            setattr(backend, name, _locked(func))
+
+
 def main() -> None:
     config_path = Path(os.environ.get("MEDALLION_CONFIG", "config/medallion_config.json"))
     host = os.environ.get("MEDALLION_HOST", "0.0.0.0")
@@ -111,6 +143,7 @@ def main() -> None:
     set_config(application_instance, "taxii", configuration)
     set_config(application_instance, "backend", configuration)
     register_blueprints(application_instance)
+    _wrap_backend_calls()
 
     @application_instance.before_request
     def _sync_discovery_urls() -> None:
