@@ -148,7 +148,8 @@ docker compose --profile opentaxii up -d --build
 
 This starts **`slipsweb-opentaxii`**, **`opentaxii`**, and **`opentaxii-db`**.
 OpenTAXII listens on container port `9000` and is published on host port `1234`.
-Postgres data is stored in the `opentaxii_pgdata` volume.
+Postgres data is stored in the **named Docker volume** `opentaxii_pgdata`, so it
+persists across container stops/starts.
 
 ### 3b) Stop the stack
 
@@ -170,6 +171,43 @@ Stop **all** SlipsWeb containers created by this Compose file (regardless of pro
 docker compose --env-file .env down --remove-orphans
 ```
 
+Note: do **not** use `--volumes` if you want to keep the OpenTAXII Postgres
+data. That flag removes `opentaxii_pgdata`.
+
+### Persistent OpenTAXII storage
+
+OpenTAXII uses PostgreSQL for persistence. The Compose file mounts a named
+volume so data survives container restarts:
+
+```
+volumes:
+  opentaxii_pgdata: {}
+```
+
+You can inspect the volume with:
+
+```bash
+docker volume ls | grep opentaxii_pgdata
+```
+
+To access the database from your console (inside Docker):
+
+```bash
+docker compose --env-file .env --profile opentaxii exec opentaxii-db \
+  psql -U "$OPENTAXII_DB_USER" -d opentaxii
+```
+
+If the network is still reported as “in use” (e.g., a leftover container is
+attached), run the helper to stop **everything** on the SlipsWeb network and
+remove it:
+
+```bash
+./utils/stop_slipsweb.sh
+```
+
+Tip: the Compose project name is pinned to `slipsweb` (see `docker-compose.yml`)
+to keep network naming consistent across runs.
+
 ### 4) Point Slips to the right TAXII server
 
 In `config/slips.yaml` set:
@@ -177,7 +215,8 @@ In `config/slips.yaml` set:
 - `TAXII_server`: `localhost` (if Slips runs on the same host)
   or `medallion` / `opentaxii` (if Slips runs in the same Docker network)
 - `port`: `1234`
-- `discovery_path`: `/taxii2/`
+- `taxii_version`: `2` for Medallion, `1` for OpenTAXII
+- `discovery_path`: `/taxii2/` (used for TAXII 2 only)
 - `taxii_username` / `taxii_password`: match the `.env` credentials
 
 Notes:
@@ -185,9 +224,16 @@ Notes:
   to `1234` by default).
 - OpenTAXII uses template files from `config/opentaxii/`; credentials are
   injected at runtime from `.env` so nothing sensitive is committed.
+- On container start, OpenTAXII automatically renders the templates and
+  re-syncs `data-configuration.yml` into Postgres. If you edit
+  `config/opentaxii/data-configuration.yml.tmpl`, restart the OpenTAXII
+  container so the new config is applied.
 - SlipsWeb uses TAXII 2 endpoints (e.g., `/taxii2/`). OpenTAXII's open-source
-  defaults are TAXII 1.x, so you may need to enable TAXII 2 support or use a
-  TAXII 2-capable server.
+  defaults are TAXII 1.x. SlipsWeb can still **display OpenTAXII data** by
+  polling the TAXII 1 inbox/collection, but it only loads recent data (default
+  24 hours) and keeps an in-memory cache (default 5,000 items) for performance.
+  Override with `TAXII1_LOOKBACK_HOURS` and `TAXII1_CACHE_MAX` environment
+  variables if needed.
 
 ## Run SlipsWeb and Medallion inside Docker
 
