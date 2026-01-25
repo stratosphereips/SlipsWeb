@@ -302,8 +302,12 @@ def _taxii1_poll(
         return items
     filtered = []
     for item in items:
-        ts = _parse_taxii1_timestamp(item.get("valid_from") or item.get("created"))
-        if ts is None or ts >= begin_timestamp:
+        created_ts = _parse_taxii1_timestamp(item.get("created"))
+        if created_ts is None:
+            valid_ts = _parse_taxii1_timestamp(item.get("valid_from"))
+            if valid_ts is None or valid_ts >= begin_timestamp:
+                filtered.append(item)
+        elif created_ts >= begin_timestamp:
             filtered.append(item)
     return filtered
 
