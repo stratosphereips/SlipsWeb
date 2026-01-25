@@ -37,4 +37,41 @@ render_template "${TEMPLATE_DIR}/data-configuration.yml.tmpl" "${OUTPUT_DIR}/dat
 
 export OPENTAXII_CONFIG="${OUTPUT_DIR}/opentaxii.yml"
 
+wait_for_db() {
+  python - <<'PY'
+import os
+import socket
+import time
+
+host = os.environ.get("DATABASE_HOST", "opentaxii-db")
+port = int(os.environ.get("DATABASE_PORT", "5432"))
+deadline = time.time() + 30
+while time.time() < deadline:
+    try:
+        with socket.create_connection((host, port), timeout=2):
+            break
+    except OSError:
+        time.sleep(1)
+else:
+    raise SystemExit(f"Database {host}:{port} did not become available")
+PY
+}
+
+sync_data() {
+  local tries=0
+  while true; do
+    if opentaxii-sync-data -f "${OUTPUT_DIR}/data-configuration.yml"; then
+      return 0
+    fi
+    tries=$((tries + 1))
+    if [[ "${tries}" -ge 10 ]]; then
+      return 1
+    fi
+    sleep 1
+  done
+}
+
+wait_for_db
+sync_data
+
 exec /entrypoint.sh "$@"
