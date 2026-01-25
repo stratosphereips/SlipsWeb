@@ -12,6 +12,7 @@ from medallion import application_instance, register_blueprints, set_config
 
 LOG_FORMAT = "[%(name)s] [%(levelname)-8s] [%(asctime)s] %(message)s"
 BACKEND_LOCK = threading.RLock()
+BASE_DIR = Path(__file__).resolve().parent
 
 
 def _truthy(value: str) -> bool:
@@ -122,7 +123,18 @@ def _wrap_backend_calls() -> None:
 
 
 def main() -> None:
+    log = logging.getLogger("medallion")
     config_path = Path(os.environ.get("MEDALLION_CONFIG", "config/medallion_config.json"))
+    if not config_path.is_absolute():
+        config_path = (Path.cwd() / config_path).resolve()
+    fallback_config = BASE_DIR / "config_defaults" / "medallion_config.json"
+    if not config_path.exists() and fallback_config.exists():
+        log.warning(
+            "Medallion config missing at %s; using fallback %s",
+            config_path,
+            fallback_config,
+        )
+        config_path = fallback_config
     host = os.environ.get("MEDALLION_HOST", "0.0.0.0")
     port = int(os.environ.get("MEDALLION_PORT", "1234"))
     log_level = os.environ.get("MEDALLION_LOG_LEVEL", "INFO").upper()
@@ -138,6 +150,21 @@ def main() -> None:
 
     with config_path.open("r", encoding="utf-8") as config_file:
         configuration = json.load(config_file)
+    backend_config = configuration.get("backend", {})
+    filename = backend_config.get("filename")
+    if filename:
+        candidate = Path(filename)
+        if not candidate.is_absolute():
+            candidate = (Path.cwd() / candidate).resolve()
+        if not candidate.exists():
+            fallback_data = BASE_DIR / "config_defaults" / "medallion_default_data.json"
+            if fallback_data.exists():
+                log.warning(
+                    "Medallion data file missing at %s; using fallback %s",
+                    candidate,
+                    fallback_data,
+                )
+                backend_config["filename"] = str(fallback_data)
 
     set_config(application_instance, "users", configuration)
     set_config(application_instance, "taxii", configuration)
