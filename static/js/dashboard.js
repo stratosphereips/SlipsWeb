@@ -1,5 +1,6 @@
 const REFRESH_MS = 15000;
 const SEVERITY_LEVELS = ["critical", "high", "medium", "low", "info"];
+const DEFAULT_PAGE_SIZE = 100;
 
 const state = {
   evidences: [],
@@ -12,6 +13,9 @@ const state = {
   dayFilter: null,
   severityFilter: new Set(),
   groupByIp: false,
+  pageSize: DEFAULT_PAGE_SIZE,
+  pageIndex: 0,
+  pageTokens: [null],
 };
 
 let timelineChart;
@@ -32,9 +36,41 @@ const formatBadgeDate = (key) => {
   return new Date(y, m - 1, d).toLocaleDateString();
 };
 
+function buildDashboardUrl() {
+  const params = new URLSearchParams();
+  params.set("limit", state.pageSize);
+  const token = state.pageTokens[state.pageIndex];
+  if (token) {
+    params.set("next", token);
+  }
+  const qs = params.toString();
+  return qs ? `/api/dashboard?${qs}` : "/api/dashboard";
+}
+
+function updatePaginationControls() {
+  const prev = document.getElementById("pagePrev");
+  const next = document.getElementById("pageNext");
+  const indicator = document.getElementById("pageIndicator");
+  if (indicator) {
+    const count = state.evidences.length || 0;
+    indicator.textContent = `Page ${state.pageIndex + 1} • ${count} items`;
+  }
+  if (prev) prev.disabled = state.pageIndex === 0;
+  if (next) {
+    const nextToken = state.pageTokens[state.pageIndex + 1];
+    next.disabled = !nextToken;
+  }
+}
+
+function resetPaging() {
+  state.pageIndex = 0;
+  state.pageTokens = [null];
+  updatePaginationControls();
+}
+
 async function fetchDashboard() {
   try {
-    const response = await fetch("/api/dashboard");
+    const response = await fetch(buildDashboardUrl(), { cache: "no-store" });
     if (!response.ok) throw new Error("Failed to load dashboard data");
     const payload = await response.json();
 
@@ -45,6 +81,12 @@ async function fetchDashboard() {
       ? state.calendarMonths.length - 1
       : 0;
 
+    if (payload.page?.limit && payload.page.limit !== state.pageSize) {
+      state.pageSize = payload.page.limit;
+      const pageSelect = document.getElementById("pageSizeSelect");
+      if (pageSelect) pageSelect.value = String(state.pageSize);
+    }
+
     document.getElementById("lastUpdated").textContent = formatDateTime(
       new Date(payload.generated_at),
     );
@@ -53,12 +95,30 @@ async function fetchDashboard() {
     document.getElementById("refreshInterval").textContent = `${Math.round(
       REFRESH_MS / 1000,
     )}s`;
+    const clearButton = document.getElementById("clearMedallion");
+    if (clearButton) {
+      if (payload.backend === "opentaxii") {
+        clearButton.disabled = true;
+        clearButton.textContent = "Clear Alerts (N/A)";
+      } else {
+        clearButton.disabled = false;
+        clearButton.textContent = "Clear Alerts";
+      }
+    }
 
     updateStats(payload.summary || {});
     updateTimelineChart(buildTimelineFromEvidences(state.evidences));
     renderIpList(state.ipSummary);
     renderCalendar();
     applyFilters();
+
+    const nextToken = payload.page?.next || null;
+    if (nextToken) {
+      state.pageTokens[state.pageIndex + 1] = nextToken;
+    } else {
+      state.pageTokens = state.pageTokens.slice(0, state.pageIndex + 1);
+    }
+    updatePaginationControls();
   } catch (error) {
     console.error(error);
   }
@@ -663,6 +723,34 @@ function init() {
   document
     .getElementById("clearMedallion")
     ?.addEventListener("click", clearMedallionData);
+
+  const pageSelect = document.getElementById("pageSizeSelect");
+  if (pageSelect) {
+    pageSelect.value = String(state.pageSize);
+    pageSelect.addEventListener("change", () => {
+      const value = Number.parseInt(pageSelect.value, 10);
+      if (Number.isFinite(value) && value > 0) {
+        state.pageSize = value;
+        resetPaging();
+        fetchDashboard();
+      }
+    });
+  }
+
+  document.getElementById("pagePrev")?.addEventListener("click", () => {
+    if (state.pageIndex === 0) return;
+    state.pageIndex -= 1;
+    fetchDashboard();
+  });
+
+  document.getElementById("pageNext")?.addEventListener("click", () => {
+    const nextToken = state.pageTokens[state.pageIndex + 1];
+    if (!nextToken) return;
+    state.pageIndex += 1;
+    fetchDashboard();
+  });
+
+  updatePaginationControls();
 
   initSorting();
   initSeverityFilters();
