@@ -1,6 +1,7 @@
 import json
 import os
 import threading
+import time
 import xml.etree.ElementTree as ET
 from collections import Counter
 from datetime import datetime, timezone, timedelta
@@ -38,6 +39,7 @@ TAXII1_NS = {
 }
 TAXII1_CACHE_MAX = int(os.getenv("TAXII1_CACHE_MAX", "5000"))
 TAXII1_LOOKBACK_HOURS = int(os.getenv("TAXII1_LOOKBACK_HOURS", "24"))
+SUMMARY_CACHE_TTL = int(os.getenv("DASHBOARD_SUMMARY_TTL", "15"))
 
 _TAXII1_LOCK = threading.Lock()
 _TAXII1_CACHE = {
@@ -45,6 +47,11 @@ _TAXII1_CACHE = {
     "ids": set(),
     "last_poll": None,
     "last_poll_ts": 0.0,
+}
+_SUMMARY_CACHE = {
+    "backend": None,
+    "ts": 0.0,
+    "summary": None,
 }
 
 
@@ -335,26 +342,48 @@ def _parse_taxii1_poll_response(xml_text: str) -> List[Dict]:
     return items
 
 
+def _split_description_meta(description: str) -> Tuple[str, Dict[str, object]]:
+    if not description:
+        return "", {}
+    marker = "SLIPS_META:"
+    if marker not in description:
+        return description, {}
+    base, meta_raw = description.split(marker, 1)
+    meta_raw = meta_raw.strip()
+    if not meta_raw:
+        return base.strip(), {}
+    try:
+        meta = json.loads(meta_raw)
+    except json.JSONDecodeError:
+        return base.strip(), {}
+    if not isinstance(meta, dict):
+        return base.strip(), {}
+    return base.strip(), meta
+
+
 def _parse_taxii1_indicator(
     indicator: ET.Element, poll_time_iso: str
 ) -> Optional[Dict]:
     indicator_id = indicator.get("id")
     title = indicator.findtext("indicator:Title", default="", namespaces=TAXII1_NS).strip()
-    description = indicator.findtext(
+    description_raw = indicator.findtext(
         "indicator:Description", default="", namespaces=TAXII1_NS
     ).strip()
+    description, meta = _split_description_meta(description_raw)
 
-    timestamp = None
-    for path in (
+    valid_from = indicator.findtext(
         ".//indicator:Valid_Time_Position/indicator:Start_Time",
-        ".//indicator:Produced_Time",
-        ".//indicator:Created_Time",
-        ".//stixCommon:Timestamp",
-    ):
-        timestamp = indicator.findtext(path, namespaces=TAXII1_NS)
-        if timestamp:
-            break
-    timestamp = timestamp or poll_time_iso
+        namespaces=TAXII1_NS,
+    )
+    created_time = indicator.findtext(".//indicator:Created_Time", namespaces=TAXII1_NS)
+    if not created_time:
+        created_time = indicator.findtext(".//indicator:Produced_Time", namespaces=TAXII1_NS)
+    if not created_time:
+        created_time = indicator.findtext(".//stixCommon:Timestamp", namespaces=TAXII1_NS)
+    if not valid_from:
+        valid_from = created_time or poll_time_iso
+    if not created_time:
+        created_time = valid_from or poll_time_iso
 
     ip_value = indicator.findtext(".//AddressObj:Address_Value", namespaces=TAXII1_NS)
     domain_value = indicator.findtext(".//DomainNameObj:Value", namespaces=TAXII1_NS)
@@ -371,7 +400,7 @@ def _parse_taxii1_indicator(
         pattern = f"[url:value = '{url_value}']"
 
     if not indicator_id:
-        indicator_id = f"indicator--{hash((title, pattern, timestamp))}"
+        indicator_id = f"indicator--{hash((title, pattern, valid_from))}"
 
     return {
         "type": "indicator",
@@ -381,12 +410,15 @@ def _parse_taxii1_indicator(
         "pattern": pattern or "",
         "pattern_type": "stix",
         "labels": ["info"],
-        "valid_from": timestamp,
-        "created": timestamp,
-        "modified": timestamp,
+        "valid_from": valid_from,
+        "created": created_time,
+        "modified": created_time,
         "x_slips_threat_level": "info",
         "x_slips_profile_ip": profile_ip,
         "x_slips_evidence_id": indicator_id,
+        "x_slips_victim": meta.get("victim"),
+        "x_slips_src_port": meta.get("src_port"),
+        "x_slips_dst_port": meta.get("dst_port"),
     }
 
 
@@ -480,6 +512,91 @@ def _summarize_ips(evidences: List[Dict]) -> List[Dict]:
     )
 
 
+def _summarize_objects_total(objects: List[Dict], collection_name: str) -> Dict[str, object]:
+    total = 0
+    critical = 0
+    high = 0
+    unique_ips = set()
+    for indicator in objects:
+        if indicator.get("type") != "indicator":
+            continue
+        total += 1
+        severity = _normalize_severity(indicator)
+        if severity == "critical":
+            critical += 1
+        elif severity == "high":
+            high += 1
+        ip = indicator.get("x_slips_profile_ip")
+        if ip:
+            unique_ips.add(ip)
+    return {
+        "total_evidences": total,
+        "unique_ips": len(unique_ips),
+        "critical": critical,
+        "high": high,
+        "collection": collection_name,
+    }
+
+
+def _fetch_objects_summary(
+    collection_info: Dict, auth: Tuple[str, str], max_page_size: int
+) -> Dict[str, object]:
+    objects_url = _resolve_objects_url(collection_info)
+    headers = {"Accept": ACCEPT_HEADER}
+    page_url = _build_page_url(objects_url, max_page_size)
+    total = 0
+    critical = 0
+    high = 0
+    unique_ips = set()
+    safety = 0
+    while page_url and safety < 1000:
+        response = requests.get(page_url, headers=headers, auth=auth, timeout=10)
+        response.raise_for_status()
+        payload = response.json()
+        objects = payload.get("objects", [])
+        for indicator in objects:
+            if indicator.get("type") != "indicator":
+                continue
+            total += 1
+            severity = _normalize_severity(indicator)
+            if severity == "critical":
+                critical += 1
+            elif severity == "high":
+                high += 1
+            ip = indicator.get("x_slips_profile_ip")
+            if ip:
+                unique_ips.add(ip)
+        next_token = payload.get("next")
+        if next_token:
+            page_url = _build_page_url(objects_url, max_page_size, next_token)
+        else:
+            page_url = None
+        safety += 1
+
+    return {
+        "total_evidences": total,
+        "unique_ips": len(unique_ips),
+        "critical": critical,
+        "high": high,
+        "collection": collection_info.get("title") or collection_info.get("id"),
+    }
+
+
+def _get_cached_summary(backend: str, compute_fn) -> Dict[str, object]:
+    now = time.time()
+    cached = _SUMMARY_CACHE.get("summary")
+    if (
+        SUMMARY_CACHE_TTL > 0
+        and cached is not None
+        and _SUMMARY_CACHE.get("backend") == backend
+        and now - _SUMMARY_CACHE.get("ts", 0) < SUMMARY_CACHE_TTL
+    ):
+        return cached
+    summary = compute_fn()
+    _SUMMARY_CACHE.update({"backend": backend, "ts": now, "summary": summary})
+    return summary
+
+
 def _prepare_evidences(objects: List[Dict]) -> List[Dict]:
     evidences = []
     for indicator in objects:
@@ -545,6 +662,8 @@ def get_dashboard_payload(
             with _TAXII1_LOCK:
                 items = list(_TAXII1_CACHE["items"])
 
+            summary = _summarize_objects_total(items, DEFAULT_COLLECTION_TITLE)
+
             effective_limit = page_size
             if isinstance(limit, int) and limit > 0:
                 effective_limit = min(limit, page_size) if page_size else limit
@@ -563,13 +682,6 @@ def get_dashboard_payload(
             evidences = _prepare_evidences(page_items)
             timeline = _build_timeline(evidences)
             ip_summary = _summarize_ips(evidences)
-            summary = {
-                "total_evidences": len(evidences),
-                "unique_ips": len(ip_summary),
-                "critical": sum(1 for e in evidences if e["severity"] == "critical"),
-                "high": sum(1 for e in evidences if e["severity"] == "high"),
-                "collection": DEFAULT_COLLECTION_TITLE,
-            }
 
             return {
                 "generated_at": datetime.utcnow().isoformat() + "Z",
@@ -589,6 +701,10 @@ def get_dashboard_payload(
         collection = _select_collection(api_root, auth)
         collection.setdefault("api_root", api_root)
         collection.setdefault("url", f"{api_root}collections/{collection.get('id')}/")
+        summary = _get_cached_summary(
+            backend,
+            lambda: _fetch_objects_summary(collection, auth, page_size),
+        )
         effective_limit = page_size
         if isinstance(limit, int) and limit > 0:
             effective_limit = min(limit, page_size) if page_size else limit
@@ -600,13 +716,6 @@ def get_dashboard_payload(
         evidences = _prepare_evidences(objects)
         timeline = _build_timeline(evidences)
         ip_summary = _summarize_ips(evidences)
-        summary = {
-            "total_evidences": len(evidences),
-            "unique_ips": len(ip_summary),
-            "critical": sum(1 for e in evidences if e["severity"] == "critical"),
-            "high": sum(1 for e in evidences if e["severity"] == "high"),
-            "collection": collection.get("title") or collection.get("id"),
-        }
 
         return {
             "generated_at": datetime.utcnow().isoformat() + "Z",
