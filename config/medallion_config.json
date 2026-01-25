@@ -3,10 +3,7 @@
     "host": "0.0.0.0",
     "port": 1234
   },
-  "users": {
-      "admin": "changeme_before_installing_a_medallion_server"
-  }
-  ,
+  "users": {},
   "taxii": { "max_page_size": 100},
   "backend": {
   "module": "medallion.backends.memory_backend",
