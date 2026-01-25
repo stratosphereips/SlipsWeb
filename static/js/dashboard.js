@@ -130,12 +130,13 @@ function decorateEvidences(raw) {
     const timestampDate = timestamp ? new Date(timestamp) : null;
     const createdDate = ev.created ? new Date(ev.created) : null;
     const modifiedDate = ev.modified ? new Date(ev.modified) : null;
+    const allowFallback = ev.time_diff_ok !== false;
     const timeDiffSeconds =
       typeof ev.time_diff_seconds === "number" && Number.isFinite(ev.time_diff_seconds)
         ? ev.time_diff_seconds
-      : createdDate && timestampDate
-        ? Math.round(Math.abs((createdDate - timestampDate) / 1000))
-        : null;
+        : allowFallback && createdDate && timestampDate
+          ? Math.round(Math.abs((createdDate - timestampDate) / 1000))
+          : null;
     return {
       ...ev,
       timestamp,
