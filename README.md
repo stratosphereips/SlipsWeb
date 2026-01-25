@@ -47,8 +47,7 @@ Now that the Medallion server is running. Slips can export to it.
 
 You can run this curl to check if medallion is working
 
-`curl -H "Accept: application/taxii+json;version=2.1" -u admin:changeme_before_installin
-g_a_medallion_server http://localhost:1234/alerts/collections/`
+`curl -H "Accept: application/taxii+json;version=2.1" -u admin:changeme_before_installing_a_medallion_server http://localhost:1234/alerts/collections/`
 
 
 ## 4. Exporting from Slips to Medallion TAXII Server
