@@ -1,7 +1,9 @@
 import json
 import os
+import threading
+import xml.etree.ElementTree as ET
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -16,9 +18,37 @@ ALERTS_API_PATH = "/alerts/"
 ACCEPT_HEADER = "application/taxii+json;version=2.1"
 SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"]
 SEVERITY_RANK = {sev: (len(SEVERITY_ORDER) - idx) for idx, sev in enumerate(SEVERITY_ORDER)}
+TAXII1_HEADERS = {
+    "Content-Type": "application/xml",
+    "Accept": "application/xml",
+    "X-TAXII-Content-Type": "urn:taxii.mitre.org:message:xml:1.1",
+    "X-TAXII-Accept": "urn:taxii.mitre.org:message:xml:1.1",
+    "X-TAXII-Protocol": "urn:taxii.mitre.org:protocol:http:1.0",
+    "X-TAXII-Services": "urn:taxii.mitre.org:services:1.1",
+}
+TAXII1_NS = {
+    "taxii_11": "http://taxii.mitre.org/messages/taxii_xml_binding-1.1",
+    "stix": "http://stix.mitre.org/stix-1",
+    "indicator": "http://stix.mitre.org/Indicator-2",
+    "cybox": "http://cybox.mitre.org/cybox-2",
+    "AddressObj": "http://cybox.mitre.org/objects#AddressObject-2",
+    "DomainNameObj": "http://cybox.mitre.org/objects#DomainNameObject-1",
+    "URIObj": "http://cybox.mitre.org/objects#URIObject-2",
+    "stixCommon": "http://stix.mitre.org/common-1",
+}
+TAXII1_CACHE_MAX = int(os.getenv("TAXII1_CACHE_MAX", "5000"))
+TAXII1_LOOKBACK_HOURS = int(os.getenv("TAXII1_LOOKBACK_HOURS", "24"))
+
+_TAXII1_LOCK = threading.Lock()
+_TAXII1_CACHE = {
+    "items": [],
+    "ids": set(),
+    "last_poll": None,
+    "last_poll_ts": 0.0,
+}
 
 
-def _load_medallion_config() -> Tuple[str, Tuple[str, str]]:
+def _load_medallion_config() -> Tuple[str, Tuple[str, str], int]:
     config = {}
     if CONFIG_PATH.exists():
         with CONFIG_PATH.open() as config_file:
@@ -72,6 +102,10 @@ def _load_medallion_config() -> Tuple[str, Tuple[str, str]]:
         config.get("taxii", {}).get("max_page_size", 100),
     )
     return base_url, auth, max_page_size
+
+
+def _taxii_backend() -> str:
+    return os.getenv("TAXII_BACKEND", "medallion").strip().lower() or "medallion"
 
 
 def _discover_api_root(base_url: str, auth: Tuple[str, str]) -> str:
@@ -164,6 +198,21 @@ def _fetch_objects(
     return collected
 
 
+def _fetch_objects_page(
+    collection_info: Dict,
+    auth: Tuple[str, str],
+    limit: int,
+    next_token: Optional[str] = None,
+) -> Tuple[List[Dict], Optional[str]]:
+    objects_url = _resolve_objects_url(collection_info)
+    headers = {"Accept": ACCEPT_HEADER}
+    page_url = _build_page_url(objects_url, limit, next_token)
+    response = requests.get(page_url, headers=headers, auth=auth, timeout=10)
+    response.raise_for_status()
+    payload = response.json()
+    return payload.get("objects", []), payload.get("next")
+
+
 def _severity_rank(level: str) -> int:
     if not level:
         return 0
@@ -195,6 +244,185 @@ def _parse_iso_datetime(timestamp: str) -> Optional[datetime]:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def _parse_taxii1_timestamp(text: Optional[str]) -> Optional[datetime]:
+    if not text:
+        return None
+    return _parse_iso_datetime(text)
+
+
+def _taxii1_timestamp(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _taxii1_build_poll_request(
+    collection_name: str, begin_timestamp: Optional[datetime]
+) -> str:
+    return f"""
+    <taxii_11:Poll_Request
+      xmlns:taxii_11="http://taxii.mitre.org/messages/taxii_xml_binding-1.1"
+      message_id="1"
+      collection_name="{collection_name}">
+      <taxii_11:Poll_Parameters>
+        <taxii_11:Response_Type>FULL</taxii_11:Response_Type>
+        <taxii_11:Content_Binding binding_id="urn:stix.mitre.org:xml:1.2" />
+      </taxii_11:Poll_Parameters>
+    </taxii_11:Poll_Request>
+    """.strip()
+
+
+def _taxii1_poll(
+    base_url: str,
+    auth: Tuple[str, str],
+    collection_name: str,
+    begin_timestamp: Optional[datetime],
+) -> List[Dict]:
+    poll_url = f"{base_url.rstrip('/')}/services/poll"
+    payload = _taxii1_build_poll_request(collection_name, begin_timestamp)
+    response = requests.post(
+        poll_url,
+        data=payload.encode("utf-8"),
+        headers=TAXII1_HEADERS,
+        auth=auth,
+        timeout=15,
+    )
+    response.raise_for_status()
+    if 'status_type="FAILURE"' in response.text:
+        raise RuntimeError(response.text[:2000])
+    items = _parse_taxii1_poll_response(response.text)
+    if begin_timestamp is None:
+        return items
+    filtered = []
+    for item in items:
+        ts = _parse_taxii1_timestamp(item.get("valid_from") or item.get("created"))
+        if ts is None or ts >= begin_timestamp:
+            filtered.append(item)
+    return filtered
+
+
+def _parse_taxii1_poll_response(xml_text: str) -> List[Dict]:
+    items: List[Dict] = []
+    root = ET.fromstring(xml_text)
+    content_blocks = root.findall(".//taxii_11:Content_Block", TAXII1_NS)
+    poll_time = datetime.now(timezone.utc)
+    poll_time_iso = poll_time.isoformat().replace("+00:00", "Z")
+
+    for block in content_blocks:
+        content = block.find("taxii_11:Content", TAXII1_NS)
+        if content is None:
+            continue
+        stix_children = list(content)
+        stix_root = None
+        if stix_children:
+            stix_root = stix_children[0]
+        else:
+            text = (content.text or "").strip()
+            if text:
+                try:
+                    stix_root = ET.fromstring(text)
+                except ET.ParseError:
+                    stix_root = None
+        if stix_root is None:
+            continue
+        indicators = stix_root.findall(".//stix:Indicator", TAXII1_NS)
+        if not indicators:
+            indicators = stix_root.findall(".//indicator:Indicator", TAXII1_NS)
+        for indicator in indicators:
+            parsed = _parse_taxii1_indicator(indicator, poll_time_iso)
+            if parsed:
+                items.append(parsed)
+    return items
+
+
+def _parse_taxii1_indicator(
+    indicator: ET.Element, poll_time_iso: str
+) -> Optional[Dict]:
+    indicator_id = indicator.get("id")
+    title = indicator.findtext("indicator:Title", default="", namespaces=TAXII1_NS).strip()
+    description = indicator.findtext(
+        "indicator:Description", default="", namespaces=TAXII1_NS
+    ).strip()
+
+    timestamp = None
+    for path in (
+        ".//indicator:Valid_Time_Position/indicator:Start_Time",
+        ".//indicator:Produced_Time",
+        ".//indicator:Created_Time",
+        ".//stixCommon:Timestamp",
+    ):
+        timestamp = indicator.findtext(path, namespaces=TAXII1_NS)
+        if timestamp:
+            break
+    timestamp = timestamp or poll_time_iso
+
+    ip_value = indicator.findtext(".//AddressObj:Address_Value", namespaces=TAXII1_NS)
+    domain_value = indicator.findtext(".//DomainNameObj:Value", namespaces=TAXII1_NS)
+    url_value = indicator.findtext(".//URIObj:Value", namespaces=TAXII1_NS)
+
+    pattern = None
+    profile_ip = None
+    if ip_value:
+        profile_ip = ip_value
+        pattern = f"[ipv4-addr:value = '{ip_value}']"
+    elif domain_value:
+        pattern = f"[domain-name:value = '{domain_value}']"
+    elif url_value:
+        pattern = f"[url:value = '{url_value}']"
+
+    if not indicator_id:
+        indicator_id = f"indicator--{hash((title, pattern, timestamp))}"
+
+    return {
+        "type": "indicator",
+        "id": indicator_id,
+        "name": title or "OpenTAXII Indicator",
+        "description": description or None,
+        "pattern": pattern or "",
+        "pattern_type": "stix",
+        "labels": ["info"],
+        "valid_from": timestamp,
+        "created": timestamp,
+        "modified": timestamp,
+        "x_slips_threat_level": "info",
+        "x_slips_profile_ip": profile_ip,
+        "x_slips_evidence_id": indicator_id,
+    }
+
+
+def _refresh_taxii1_cache(base_url: str, auth: Tuple[str, str]) -> None:
+    now = datetime.now(timezone.utc)
+    with _TAXII1_LOCK:
+        last_poll = _TAXII1_CACHE.get("last_poll")
+        begin = None
+        if last_poll is not None:
+            begin = last_poll
+        elif TAXII1_LOOKBACK_HOURS > 0:
+            begin = now - timedelta(hours=TAXII1_LOOKBACK_HOURS)
+
+        items = _taxii1_poll(base_url, auth, DEFAULT_COLLECTION_TITLE, begin)
+        if items:
+            for item in items:
+                item_id = item.get("id")
+                if not item_id or item_id in _TAXII1_CACHE["ids"]:
+                    continue
+                _TAXII1_CACHE["ids"].add(item_id)
+                _TAXII1_CACHE["items"].append(item)
+
+            def _sort_key(entry: Dict) -> str:
+                return entry.get("valid_from") or entry.get("created") or ""
+
+            _TAXII1_CACHE["items"].sort(key=_sort_key, reverse=True)
+            if TAXII1_CACHE_MAX and len(_TAXII1_CACHE["items"]) > TAXII1_CACHE_MAX:
+                trimmed = _TAXII1_CACHE["items"][TAXII1_CACHE_MAX:]
+                _TAXII1_CACHE["items"] = _TAXII1_CACHE["items"][:TAXII1_CACHE_MAX]
+                for entry in trimmed:
+                    item_id = entry.get("id")
+                    if item_id:
+                        _TAXII1_CACHE["ids"].discard(item_id)
+
+        _TAXII1_CACHE["last_poll"] = now
+        _TAXII1_CACHE["last_poll_ts"] = now.timestamp()
 
 
 def _parse_when(indicator: Dict) -> datetime:
@@ -305,14 +533,69 @@ def _prepare_evidences(objects: List[Dict]) -> List[Dict]:
     )
 
 
-def get_dashboard_payload() -> Dict:
+def get_dashboard_payload(
+    limit: Optional[int] = None, next_token: Optional[str] = None
+) -> Dict:
     try:
+        backend = _taxii_backend()
         base_url, auth, page_size = _load_medallion_config()
+
+        if backend == "opentaxii":
+            _refresh_taxii1_cache(base_url, auth)
+            with _TAXII1_LOCK:
+                items = list(_TAXII1_CACHE["items"])
+
+            effective_limit = page_size
+            if isinstance(limit, int) and limit > 0:
+                effective_limit = min(limit, page_size) if page_size else limit
+
+            offset = 0
+            if next_token:
+                try:
+                    offset = int(next_token)
+                except ValueError:
+                    offset = 0
+
+            page_items = items[offset : offset + effective_limit]
+            next_offset = offset + effective_limit
+            next_token_out = str(next_offset) if next_offset < len(items) else None
+
+            evidences = _prepare_evidences(page_items)
+            timeline = _build_timeline(evidences)
+            ip_summary = _summarize_ips(evidences)
+            summary = {
+                "total_evidences": len(evidences),
+                "unique_ips": len(ip_summary),
+                "critical": sum(1 for e in evidences if e["severity"] == "critical"),
+                "high": sum(1 for e in evidences if e["severity"] == "high"),
+                "collection": DEFAULT_COLLECTION_TITLE,
+            }
+
+            return {
+                "generated_at": datetime.utcnow().isoformat() + "Z",
+                "timeline": timeline,
+                "ip_summary": ip_summary,
+                "evidences": evidences,
+                "summary": summary,
+                "severity_order": SEVERITY_ORDER,
+                "page": {
+                    "limit": effective_limit,
+                    "next": next_token_out,
+                },
+                "backend": backend,
+            }
+
         api_root = _discover_api_root(base_url, auth)
         collection = _select_collection(api_root, auth)
         collection.setdefault("api_root", api_root)
         collection.setdefault("url", f"{api_root}collections/{collection.get('id')}/")
-        objects = _fetch_objects(collection, auth, page_size)
+        effective_limit = page_size
+        if isinstance(limit, int) and limit > 0:
+            effective_limit = min(limit, page_size) if page_size else limit
+
+        objects, next_token_out = _fetch_objects_page(
+            collection, auth, effective_limit, next_token
+        )
 
         evidences = _prepare_evidences(objects)
         timeline = _build_timeline(evidences)
@@ -332,6 +615,11 @@ def get_dashboard_payload() -> Dict:
             "evidences": evidences,
             "summary": summary,
             "severity_order": SEVERITY_ORDER,
+            "page": {
+                "limit": effective_limit,
+                "next": next_token_out,
+            },
+            "backend": backend,
         }
     except Exception as exc:  # pragma: no cover - defensive path
         return {
@@ -352,6 +640,10 @@ def get_dashboard_payload() -> Dict:
 
 
 def clear_alerts_collection() -> Dict[str, object]:
+    backend = _taxii_backend()
+    if backend == "opentaxii":
+        raise RuntimeError("Clear alerts is not supported for OpenTAXII.")
+
     base_url, auth, page_size = _load_medallion_config()
     api_root = _discover_api_root(base_url, auth)
     collection = _select_collection(api_root, auth)
