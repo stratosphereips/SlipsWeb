@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, current_app
+from flask import Flask, jsonify, render_template, current_app, request
 
 from dashboard_data import clear_alerts_collection, get_dashboard_payload
 
@@ -21,7 +21,13 @@ def index():
 @app.route("/api/dashboard")
 def dashboard_api():
     try:
-        data = get_dashboard_payload()
+        limit = request.args.get("limit")
+        next_token = request.args.get("next")
+        try:
+            limit_value = int(limit) if limit is not None else None
+        except ValueError:
+            limit_value = None
+        data = get_dashboard_payload(limit=limit_value, next_token=next_token)
         return jsonify(data)
     except Exception as exc:  # pragma: no cover - defensive logging
         current_app.logger.exception("Failed to build dashboard payload: %s", exc)
