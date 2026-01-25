@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -40,6 +41,8 @@ TAXII1_NS = {
 TAXII1_CACHE_MAX = int(os.getenv("TAXII1_CACHE_MAX", "5000"))
 TAXII1_LOOKBACK_HOURS = int(os.getenv("TAXII1_LOOKBACK_HOURS", "24"))
 SUMMARY_CACHE_TTL = int(os.getenv("DASHBOARD_SUMMARY_TTL", "15"))
+PORT_RE = re.compile(r"port\\s+(\\d+)/(?:TCP|UDP)", re.IGNORECASE)
+DST_IP_RE = re.compile(r"destination IP\\s+([0-9a-fA-F:.]+)")
 
 _TAXII1_LOCK = threading.Lock()
 _TAXII1_CACHE = {
@@ -365,6 +368,22 @@ def _split_description_meta(description: str) -> Tuple[str, Dict[str, object]]:
     return base.strip(), meta
 
 
+def _parse_description_ports(description: str) -> Dict[str, object]:
+    if not description:
+        return {}
+    meta: Dict[str, object] = {}
+    port_match = PORT_RE.search(description)
+    if port_match:
+        try:
+            meta["dst_port"] = int(port_match.group(1))
+        except ValueError:
+            pass
+    ip_match = DST_IP_RE.search(description)
+    if ip_match:
+        meta["victim"] = ip_match.group(1)
+    return meta
+
+
 def _parse_taxii1_indicator(
     indicator: ET.Element, poll_time_iso: str
 ) -> Optional[Dict]:
@@ -374,20 +393,25 @@ def _parse_taxii1_indicator(
         "indicator:Description", default="", namespaces=TAXII1_NS
     ).strip()
     description, meta = _split_description_meta(description_raw)
+    fallback_meta = _parse_description_ports(description)
+    meta = {**fallback_meta, **meta}
 
-    valid_from = indicator.findtext(
+    valid_from = meta.get("observed") or indicator.findtext(
         ".//indicator:Valid_Time_Position/indicator:Start_Time",
         namespaces=TAXII1_NS,
     )
-    created_time = indicator.findtext(".//indicator:Created_Time", namespaces=TAXII1_NS)
+    created_time = meta.get("created") or indicator.findtext(
+        ".//indicator:Created_Time", namespaces=TAXII1_NS
+    )
     if not created_time:
         created_time = indicator.findtext(".//indicator:Produced_Time", namespaces=TAXII1_NS)
     if not created_time:
         created_time = indicator.findtext(".//stixCommon:Timestamp", namespaces=TAXII1_NS)
+    time_diff_ok = bool(valid_from and created_time)
     if not valid_from:
-        valid_from = created_time or poll_time_iso
+        valid_from = poll_time_iso
     if not created_time:
-        created_time = valid_from or poll_time_iso
+        created_time = poll_time_iso
 
     ip_value = indicator.findtext(".//AddressObj:Address_Value", namespaces=TAXII1_NS)
     domain_value = indicator.findtext(".//DomainNameObj:Value", namespaces=TAXII1_NS)
@@ -423,6 +447,7 @@ def _parse_taxii1_indicator(
         "x_slips_victim": meta.get("victim"),
         "x_slips_src_port": meta.get("src_port"),
         "x_slips_dst_port": meta.get("dst_port"),
+        "x_slips_time_diff_ok": time_diff_ok,
     }
 
 
@@ -617,8 +642,12 @@ def _prepare_evidences(objects: List[Dict]) -> List[Dict]:
         created_ts = indicator.get("created")
         created_dt = _parse_iso_datetime(created_ts)
         time_diff_seconds = None
-        if created_dt is not None and dt_obj is not None:
+        if indicator.get("x_slips_time_diff_ok") and created_dt is not None and dt_obj is not None:
             time_diff_seconds = int(round(abs((created_dt - dt_obj).total_seconds())))
+
+        time_diff_ok = indicator.get("x_slips_time_diff_ok")
+        if time_diff_ok is None:
+            time_diff_ok = True
 
         evidences.append(
             {
@@ -637,6 +666,7 @@ def _prepare_evidences(objects: List[Dict]) -> List[Dict]:
                 "created": indicator.get("created"),
                 "modified": indicator.get("modified"),
                 "time_diff_seconds": time_diff_seconds,
+                "time_diff_ok": time_diff_ok,
                 "ti_source": ti_source,
                 "flow_uids": indicator.get("x_slips_flow_uids", []),
                 "dst_port": indicator.get("x_slips_dst_port"),
