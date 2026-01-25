@@ -28,7 +28,7 @@
 
       <section class="stat-grid" id="summaryCards">
         <article class="stat-card">
-          <p>Total Evidences</p>
+          <p>Evidences (loaded)</p>
           <h2 id="statTotal">0</h2>
         </article>
         <article class="stat-card">
@@ -81,6 +81,23 @@
                 <button type="button" data-severity="medium" class="severity-btn">Medium</button>
                 <button type="button" data-severity="low" class="severity-btn">Low</button>
                 <button type="button" data-severity="info" class="severity-btn">Info</button>
+              </div>
+              <div class="table-controls">
+                <label class="control-label" for="pageSizeSelect">
+                  Show
+                  <select id="pageSizeSelect">
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                    <option value="100" selected>100</option>
+                    <option value="200">200</option>
+                    <option value="500">500</option>
+                  </select>
+                </label>
+                <div class="pager">
+                  <button class="ghost" id="pagePrev" type="button">Prev</button>
+                  <span id="pageIndicator">Page 1</span>
+                  <button class="ghost" id="pageNext" type="button">Next</button>
+                </div>
               </div>
             </div>
             <div class="table-wrapper">
