@@ -167,6 +167,43 @@ body {
   margin-bottom: 0.75rem;
 }
 
+.table-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.control-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.control-label select {
+  background: var(--surface-alt);
+  color: var(--text);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 0.5rem;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.85rem;
+}
+
+.pager {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.pager span {
+  min-width: 70px;
+  text-align: center;
+}
+
 .severity-buttons {
   display: flex;
   flex-wrap: wrap;
@@ -322,6 +359,11 @@ body {
 .ghost:hover {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+.ghost:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .calendar {
