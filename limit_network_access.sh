@@ -3,7 +3,7 @@
 set -euo pipefail
 
 CHAIN="${CHAIN:-DOCKER-USER}"
-PORTS="${PORTS:-1234 5000}"
+PORTS="${PORTS:-1234 9000 5000}"
 
 usage() {
   cat <<EOF
