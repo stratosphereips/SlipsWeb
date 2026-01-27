@@ -42,12 +42,17 @@ TAXII1_CACHE_MAX = int(os.getenv("TAXII1_CACHE_MAX", "5000"))
 TAXII1_LOOKBACK_HOURS = int(os.getenv("TAXII1_LOOKBACK_HOURS", "24"))
 SUMMARY_CACHE_TTL = int(os.getenv("DASHBOARD_SUMMARY_TTL", "15"))
 PORT_RE = re.compile(r"port\\s+(\\d+)/(?:TCP|UDP)", re.IGNORECASE)
-DST_IP_RE = re.compile(r"destination IP\\s+([0-9a-fA-F:.]+)")
+SRC_PORT_RE = re.compile(r"(?:src|source)\\s+port\\s+(\\d+)", re.IGNORECASE)
+DST_PORT_RE = re.compile(r"(?:dst|dest|destination)\\s+port\\s+(\\d+)", re.IGNORECASE)
+DST_IP_RE = re.compile(r"destination IP\\s+([0-9a-fA-F:.]+)", re.IGNORECASE)
+VICTIM_RE = re.compile(r"victim\\s+([0-9a-fA-F:.]+)", re.IGNORECASE)
+THREAT_LEVEL_RE = re.compile(r"threat level:\\s*(\\w+)", re.IGNORECASE)
 
 _TAXII1_LOCK = threading.Lock()
 _TAXII1_CACHE = {
     "items": [],
     "ids": set(),
+    "total_count": 0,
     "last_poll": None,
     "last_poll_ts": 0.0,
 }
@@ -372,15 +377,32 @@ def _parse_description_ports(description: str) -> Dict[str, object]:
     if not description:
         return {}
     meta: Dict[str, object] = {}
-    port_match = PORT_RE.search(description)
-    if port_match:
+    src_match = SRC_PORT_RE.search(description)
+    if src_match:
         try:
-            meta["dst_port"] = int(port_match.group(1))
+            meta["src_port"] = int(src_match.group(1))
         except ValueError:
             pass
+    dst_match = DST_PORT_RE.search(description)
+    if dst_match:
+        try:
+            meta["dst_port"] = int(dst_match.group(1))
+        except ValueError:
+            pass
+    if "dst_port" not in meta:
+        port_match = PORT_RE.search(description)
+        if port_match:
+            try:
+                meta["dst_port"] = int(port_match.group(1))
+            except ValueError:
+                pass
     ip_match = DST_IP_RE.search(description)
     if ip_match:
         meta["victim"] = ip_match.group(1)
+    else:
+        victim_match = VICTIM_RE.search(description)
+        if victim_match:
+            meta["victim"] = victim_match.group(1)
     return meta
 
 
@@ -395,6 +417,13 @@ def _parse_taxii1_indicator(
     description, meta = _split_description_meta(description_raw)
     fallback_meta = _parse_description_ports(description)
     meta = {**fallback_meta, **meta}
+    threat_level = meta.get("threat_level")
+    if not threat_level:
+        threat_match = THREAT_LEVEL_RE.search(description)
+        if threat_match:
+            threat_level = threat_match.group(1).lower()
+    if threat_level and threat_level not in SEVERITY_ORDER:
+        threat_level = None
 
     valid_from = meta.get("observed") or indicator.findtext(
         ".//indicator:Valid_Time_Position/indicator:Start_Time",
@@ -437,11 +466,11 @@ def _parse_taxii1_indicator(
         "description": description or None,
         "pattern": pattern or "",
         "pattern_type": "stix",
-        "labels": ["info"],
+        "labels": [threat_level] if threat_level else ["info"],
         "valid_from": valid_from,
         "created": created_time,
         "modified": created_time,
-        "x_slips_threat_level": "info",
+        "x_slips_threat_level": threat_level or "info",
         "x_slips_profile_ip": profile_ip,
         "x_slips_evidence_id": indicator_id,
         "x_slips_victim": meta.get("victim"),
@@ -469,18 +498,14 @@ def _refresh_taxii1_cache(base_url: str, auth: Tuple[str, str]) -> None:
                     continue
                 _TAXII1_CACHE["ids"].add(item_id)
                 _TAXII1_CACHE["items"].append(item)
+                _TAXII1_CACHE["total_count"] += 1
 
             def _sort_key(entry: Dict) -> str:
                 return entry.get("valid_from") or entry.get("created") or ""
 
             _TAXII1_CACHE["items"].sort(key=_sort_key, reverse=True)
             if TAXII1_CACHE_MAX and len(_TAXII1_CACHE["items"]) > TAXII1_CACHE_MAX:
-                trimmed = _TAXII1_CACHE["items"][TAXII1_CACHE_MAX:]
                 _TAXII1_CACHE["items"] = _TAXII1_CACHE["items"][:TAXII1_CACHE_MAX]
-                for entry in trimmed:
-                    item_id = entry.get("id")
-                    if item_id:
-                        _TAXII1_CACHE["ids"].discard(item_id)
 
         _TAXII1_CACHE["last_poll"] = now
         _TAXII1_CACHE["last_poll_ts"] = now.timestamp()
@@ -634,11 +659,16 @@ def _prepare_evidences(objects: List[Dict]) -> List[Dict]:
         severity = _normalize_severity(indicator)
         dt_obj = _parse_when(indicator)
         timestamp_raw = indicator.get("valid_from") or indicator.get("created") or dt_obj.isoformat()
+        description = indicator.get("description") or ""
         ti_source = indicator.get("x_slips_attacker_ti")
         if isinstance(ti_source, list):
             ti_source = ", ".join(str(entry) for entry in ti_source)
         profile_ip = indicator.get("x_slips_profile_ip")
         victim_ip = indicator.get("x_slips_victim")
+        if isinstance(victim_ip, dict):
+            victim_ip = victim_ip.get("value") or victim_ip.get("ip")
+        if not isinstance(victim_ip, str):
+            victim_ip = victim_ip if victim_ip else None
         created_ts = indicator.get("created")
         created_dt = _parse_iso_datetime(created_ts)
         time_diff_seconds = None
@@ -649,12 +679,23 @@ def _prepare_evidences(objects: List[Dict]) -> List[Dict]:
         if time_diff_ok is None:
             time_diff_ok = True
 
+        src_port = indicator.get("x_slips_src_port")
+        dst_port = indicator.get("x_slips_dst_port")
+        if src_port is None or dst_port is None or not victim_ip:
+            fallback_meta = _parse_description_ports(description)
+            if src_port is None and fallback_meta.get("src_port") is not None:
+                src_port = fallback_meta.get("src_port")
+            if dst_port is None and fallback_meta.get("dst_port") is not None:
+                dst_port = fallback_meta.get("dst_port")
+            if not victim_ip and fallback_meta.get("victim"):
+                victim_ip = fallback_meta.get("victim")
+
         evidences.append(
             {
                 "id": indicator.get("x_slips_evidence_id") or indicator.get("id"),
                 "stix_id": indicator.get("id"),
                 "name": indicator.get("name"),
-                "description": indicator.get("description"),
+                "description": description or None,
                 "pattern": indicator.get("pattern"),
                 "timestamp": timestamp_raw,
                 "sort_ts": dt_obj.isoformat(),
@@ -669,8 +710,8 @@ def _prepare_evidences(objects: List[Dict]) -> List[Dict]:
                 "time_diff_ok": time_diff_ok,
                 "ti_source": ti_source,
                 "flow_uids": indicator.get("x_slips_flow_uids", []),
-                "dst_port": indicator.get("x_slips_dst_port"),
-                "src_port": indicator.get("x_slips_src_port"),
+                "dst_port": dst_port,
+                "src_port": src_port,
                 "labels": indicator.get("labels", []),
             }
         )
@@ -695,8 +736,10 @@ def get_dashboard_payload(
             _refresh_taxii1_cache(base_url, auth)
             with _TAXII1_LOCK:
                 items = list(_TAXII1_CACHE["items"])
+                total_count = _TAXII1_CACHE.get("total_count", len(items))
 
             summary = _summarize_objects_total(items, DEFAULT_COLLECTION_TITLE)
+            summary["total_evidences"] = total_count
 
             effective_limit = page_size
             if isinstance(limit, int) and limit > 0:
