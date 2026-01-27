@@ -4,7 +4,7 @@
     "port": 1234
   },
   "users": {},
-  "taxii": { "max_page_size": 100},
+  "taxii": { "max_page_size": 500},
   "backend": {
   "module": "medallion.backends.memory_backend",
   "module_class": "MemoryBackend",
