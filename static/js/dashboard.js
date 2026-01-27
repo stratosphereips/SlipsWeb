@@ -12,13 +12,16 @@ const state = {
   ipFilter: null,
   dayFilter: null,
   severityFilter: new Set(),
+  searchQuery: "",
   groupByIp: false,
   pageSize: DEFAULT_PAGE_SIZE,
   pageIndex: 0,
   pageTokens: [null],
+  timelinePoints: [],
 };
 
 let timelineChart;
+let chartRetryTimer = null;
 
 const pad = (num) => num.toString().padStart(2, "0");
 const localDateKey = (date) =>
@@ -29,6 +32,100 @@ const formatDateTime = (dateObj) => {
   if (!(dateObj instanceof Date) || Number.isNaN(dateObj.getTime())) return "--";
   return `${dateObj.toLocaleDateString()} ${dateObj.toLocaleTimeString()}`;
 };
+
+const formatField = (value, fallback = "--") => {
+  if (value === null || value === undefined) return fallback;
+  if (Array.isArray(value)) {
+    const joined = value.filter(Boolean).join(", ");
+    return joined || fallback;
+  }
+  if (typeof value === "object") {
+    if ("value" in value && value.value !== undefined) {
+      return String(value.value);
+    }
+    if ("ip" in value && value.ip !== undefined) {
+      return String(value.ip);
+    }
+    try {
+      return JSON.stringify(value);
+    } catch (err) {
+      return fallback;
+    }
+  }
+  const text = String(value);
+  return text.trim() ? text : fallback;
+};
+
+const formatPort = (value, fallback = "?") => {
+  if (value === null || value === undefined || value === "") return fallback;
+  if (typeof value === "object") {
+    if (Object.prototype.hasOwnProperty.call(value, "value")) {
+      return String(value.value);
+    }
+    if (Object.prototype.hasOwnProperty.call(value, "port")) {
+      return String(value.port);
+    }
+    try {
+      return JSON.stringify(value);
+    } catch (err) {
+      return fallback;
+    }
+  }
+  return String(value);
+};
+
+const DESCRIPTION_DST_PORT_RE = /destination\\s+port\\s+(\\d+)/i;
+const DESCRIPTION_PORT_RE = /port\\s+(\\d+)/i;
+const DESCRIPTION_SRC_PORT_RE = /src(?:\\s*|_)?port\\s*(\\d+)/i;
+const DESCRIPTION_DST_IP_RE = /destination\\s+ip\\s+([0-9a-fA-F:.]+)/i;
+const DESCRIPTION_VICTIM_RE = /victim\\s+([0-9a-fA-F:.]+)/i;
+
+function normalizeEvidence(ev) {
+  let victim = ev.victim;
+  if (victim && typeof victim === "object") {
+    if (Object.prototype.hasOwnProperty.call(victim, "value")) {
+      victim = victim.value;
+    } else if (Object.prototype.hasOwnProperty.call(victim, "ip")) {
+      victim = victim.ip;
+    } else {
+      try {
+        victim = JSON.stringify(victim);
+      } catch (err) {
+        victim = null;
+      }
+    }
+  }
+
+  let srcPort = ev.src_port;
+  let dstPort = ev.dst_port;
+  const description = ev.description || "";
+  if (!victim && description) {
+    const ipMatch = DESCRIPTION_DST_IP_RE.exec(description);
+    if (ipMatch) {
+      victim = ipMatch[1];
+    } else {
+      const victimMatch = DESCRIPTION_VICTIM_RE.exec(description);
+      if (victimMatch) victim = victimMatch[1];
+    }
+  }
+  if ((!srcPort || !dstPort) && description) {
+    const srcMatch = DESCRIPTION_SRC_PORT_RE.exec(description);
+    if (!srcPort && srcMatch) srcPort = Number.parseInt(srcMatch[1], 10);
+    const dstMatch = DESCRIPTION_DST_PORT_RE.exec(description);
+    if (!dstPort && dstMatch) dstPort = Number.parseInt(dstMatch[1], 10);
+    if (!dstPort) {
+      const portMatch = DESCRIPTION_PORT_RE.exec(description);
+      if (portMatch) dstPort = Number.parseInt(portMatch[1], 10);
+    }
+  }
+
+  return {
+    ...ev,
+    victim: victim ?? ev.victim,
+    src_port: srcPort ?? ev.src_port,
+    dst_port: dstPort ?? ev.dst_port,
+  };
+}
 
 const formatBadgeDate = (key) => {
   if (!key) return "--";
@@ -107,7 +204,6 @@ async function fetchDashboard() {
     }
 
     updateStats(payload.summary || {});
-    updateTimelineChart(buildTimelineFromEvidences(state.evidences));
     renderIpList(state.ipSummary);
     renderCalendar();
     applyFilters();
@@ -126,19 +222,26 @@ async function fetchDashboard() {
 
 function decorateEvidences(raw) {
   return raw.map((ev) => {
-    const timestamp = ev.timestamp || ev.valid_from || ev.created;
+    const normalized = normalizeEvidence(ev);
+    const timestamp =
+      normalized.timestamp || normalized.valid_from || normalized.created;
     const timestampDate = timestamp ? new Date(timestamp) : null;
-    const createdDate = ev.created ? new Date(ev.created) : null;
-    const modifiedDate = ev.modified ? new Date(ev.modified) : null;
-    const allowFallback = ev.time_diff_ok !== false;
+    const createdDate = normalized.created
+      ? new Date(normalized.created)
+      : null;
+    const modifiedDate = normalized.modified
+      ? new Date(normalized.modified)
+      : null;
+    const allowFallback = normalized.time_diff_ok !== false;
     const timeDiffSeconds =
-      typeof ev.time_diff_seconds === "number" && Number.isFinite(ev.time_diff_seconds)
-        ? ev.time_diff_seconds
+      typeof normalized.time_diff_seconds === "number" &&
+      Number.isFinite(normalized.time_diff_seconds)
+        ? normalized.time_diff_seconds
         : allowFallback && createdDate && timestampDate
           ? Math.round(Math.abs((createdDate - timestampDate) / 1000))
           : null;
     return {
-      ...ev,
+      ...normalized,
       timestamp,
       timestampDate,
       createdDate,
@@ -178,6 +281,16 @@ function buildTimelineFromEvidences(evidences) {
 }
 
 function updateTimelineChart(points) {
+  state.timelinePoints = points;
+  if (typeof window.Chart === "undefined") {
+    if (!chartRetryTimer) {
+      chartRetryTimer = setTimeout(() => {
+        chartRetryTimer = null;
+        updateTimelineChart(state.timelinePoints || []);
+      }, 200);
+    }
+    return;
+  }
   const ctx = document.getElementById("timelineChart");
   const labels = points.map((p) => p.label.toLocaleTimeString());
   const data = points.map((p) => p.count);
@@ -213,6 +326,74 @@ function updateTimelineChart(points) {
   }
 }
 
+function matchesSearch(ev, query) {
+  const tokens = query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!tokens.length) return true;
+  const { text, numericTokens } = buildSearchIndex(ev);
+  return tokens.every((token) => {
+    if (/^\d+$/.test(token)) {
+      return numericTokens.has(token);
+    }
+    return text.includes(token);
+  });
+}
+
+function buildSearchIndex(ev) {
+  const src = ev.src_port != null ? String(ev.src_port) : "";
+  const dst = ev.dst_port != null ? String(ev.dst_port) : "";
+  const ports = src || dst ? `${src}:${dst}` : "";
+  const parts = [
+    ev.id,
+    ev.stix_id,
+    ev.name,
+    ev.description,
+    ev.profile_ip,
+    formatField(ev.victim, ""),
+    ev.direction,
+    ev.severity,
+    ev.ti_source,
+    ev.pattern,
+    ev.timestamp,
+    ev.created,
+    ev.modified,
+    ev.labels?.join(" "),
+    ev.flow_uids?.join(" "),
+    src,
+    dst,
+    ports,
+    ev.time_diff_seconds != null ? String(ev.time_diff_seconds) : "",
+    ev.createdDate ? formatDateTime(ev.createdDate) : "",
+    ev.timestampDate ? formatDateTime(ev.timestampDate) : "",
+    ev.modifiedDate ? formatDateTime(ev.modifiedDate) : "",
+  ].filter(Boolean);
+  const text = parts.join(" ").toLowerCase();
+  const numericTokens = new Set();
+  const numericParts = [
+    ev.profile_ip,
+    formatField(ev.victim, ""),
+    src,
+    dst,
+    ports,
+    ev.timestamp,
+    ev.created,
+    ev.modified,
+    ev.createdDate ? formatDateTime(ev.createdDate) : "",
+    ev.timestampDate ? formatDateTime(ev.timestampDate) : "",
+    ev.modifiedDate ? formatDateTime(ev.modifiedDate) : "",
+    ev.time_diff_seconds != null ? String(ev.time_diff_seconds) : "",
+  ].filter(Boolean);
+  numericParts.forEach((part) => {
+    const matches = String(part).match(/\d+/g);
+    if (matches) {
+      matches.forEach((match) => numericTokens.add(match));
+    }
+  });
+  return { text, numericTokens };
+}
+
 function applyFilters() {
   let filtered = [...state.evidences];
   if (state.ipFilter) {
@@ -224,9 +405,12 @@ function applyFilters() {
   if (state.severityFilter.size) {
     filtered = filtered.filter((ev) => state.severityFilter.has(ev.severity));
   }
+  if (state.searchQuery) {
+    filtered = filtered.filter((ev) => matchesSearch(ev, state.searchQuery));
+  }
   state.filtered = sortData(filtered);
   renderEvidenceTable(state.filtered);
-  updateTimelineChart(buildTimelineFromEvidences(state.filtered.length ? state.filtered : state.evidences));
+  updateTimelineChart(buildTimelineFromEvidences(state.filtered));
   updateFilterBadge();
 }
 
@@ -325,6 +509,9 @@ function renderEvidenceTable(evidences) {
   }
 
   const addRow = (ev) => {
+    const victimText = formatField(ev.victim);
+    const srcPortText = formatPort(ev.src_port);
+    const dstPortText = formatPort(ev.dst_port);
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td><span class="${severityClass(ev.severity)}">${
@@ -334,8 +521,8 @@ function renderEvidenceTable(evidences) {
       <td>${formatDateTime(ev.timestampDate)}</td>
       <td class="name-cell">${ev.name || "Unnamed"}</td>
       <td>${ev.profile_ip || "--"}</td>
-      <td>${ev.victim || "--"}</td>
-      <td>${ev.src_port || "?"} → ${ev.dst_port || "?"}</td>
+      <td>${victimText}</td>
+      <td>${srcPortText} → ${dstPortText}</td>
       <td>${formatTimeDiff(ev)}</td>
       <td>${ev.ti_source || "—"}</td>`;
     tr.addEventListener("click", () => {
@@ -474,8 +661,9 @@ function deriveCalendarTone(day) {
     high: "rgba(251,191,36,0.35)",
     medium: "rgba(52,211,153,0.35)",
     low: "rgba(34,211,238,0.35)",
+    info: "rgba(96,165,250,0.35)",
   };
-  for (const sev of ["critical", "high", "medium", "low"]) {
+  for (const sev of ["critical", "high", "medium", "low", "info"]) {
     if (day[sev]) {
       return { background: palette[sev], color: "#fff" };
     }
@@ -494,6 +682,9 @@ function updateFilterBadge() {
         .map((sev) => sev[0].toUpperCase() + sev.slice(1))
         .join(", ")}`,
     );
+  }
+  if (state.searchQuery) {
+    filters.push(`Search: ${state.searchQuery}`);
   }
   badge.textContent = filters.length ? filters.join(" • ") : "All activity";
 }
@@ -540,7 +731,7 @@ function buildIpDetail(ipEntry) {
         <div class="detail-card">
           <h4>${ev.name || "Unnamed"}</h4>
           <p>${ev.description || "No description"}</p>
-          <p><strong>Victim:</strong> ${ev.victim || "--"} • <strong>Severity:</strong> ${
+          <p><strong>Victim:</strong> ${formatField(ev.victim)} • <strong>Severity:</strong> ${
         ev.severity
       }</p>
         </div>`,
@@ -553,6 +744,9 @@ function buildIpDetail(ipEntry) {
 }
 
 function buildEvidenceDetail(ev) {
+  const victimText = formatField(ev.victim);
+  const srcPortText = formatPort(ev.src_port);
+  const dstPortText = formatPort(ev.dst_port);
   const flows = ev.flow_uids?.length
     ? ev.flow_uids.map((uid) => `<span class="flow-pill">${uid}</span>`).join(" ")
     : "<span class='muted'>No Flow IDs</span>";
@@ -565,8 +759,8 @@ function buildEvidenceDetail(ev) {
       <p>${ev.description || "No description provided."}</p>
     </div>
     <p><strong>Responsible IP:</strong> ${ev.profile_ip || "--"} (${ev.direction || "?"})</p>
-    <p><strong>Victim:</strong> ${ev.victim || "--"}</p>
-    <p><strong>Ports:</strong> ${ev.src_port || "?"} → ${ev.dst_port || "?"}</p>
+    <p><strong>Victim:</strong> ${victimText}</p>
+    <p><strong>Ports:</strong> ${srcPortText} → ${dstPortText}</p>
     <p><strong>Created:</strong> ${formatDateTime(ev.createdDate)}</p>
     <p><strong>Updated:</strong> ${formatDateTime(ev.modifiedDate)}</p>
     <p><strong>Observed:</strong> ${formatDateTime(ev.timestampDate)}</p>
@@ -735,6 +929,15 @@ function init() {
         resetPaging();
         fetchDashboard();
       }
+    });
+  }
+
+  const searchInput = document.getElementById("searchInput");
+  if (searchInput) {
+    searchInput.value = state.searchQuery;
+    searchInput.addEventListener("input", () => {
+      state.searchQuery = searchInput.value.trim();
+      applyFilters();
     });
   }
 
