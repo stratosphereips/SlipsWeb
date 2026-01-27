@@ -86,12 +86,21 @@
                 <label class="control-label" for="pageSizeSelect">
                   Show
                   <select id="pageSizeSelect">
+                    <option value="10">10</option>
                     <option value="25">25</option>
                     <option value="50">50</option>
                     <option value="100" selected>100</option>
                     <option value="200">200</option>
                     <option value="500">500</option>
                   </select>
+                </label>
+                <label class="control-label" for="searchInput">
+                  Search
+                  <input
+                    id="searchInput"
+                    type="search"
+                    placeholder="IP, victim, port, name..."
+                  />
                 </label>
                 <div class="pager">
                   <button class="ghost" id="pagePrev" type="button">Prev</button>
@@ -148,6 +157,7 @@
               <span><span class="legend high"></span> High</span>
               <span><span class="legend medium"></span> Medium</span>
               <span><span class="legend low"></span> Low</span>
+              <span><span class="legend info"></span> Info</span>
             </div>
           </article>
         </div>
