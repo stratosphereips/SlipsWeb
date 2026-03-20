@@ -350,6 +350,7 @@ function buildSearchIndex(ev) {
     ev.stix_id,
     ev.name,
     ev.description,
+    ev.evidence_signal,
     ev.profile_ip,
     formatField(ev.victim, ""),
     ev.direction,
@@ -753,6 +754,9 @@ function buildEvidenceDetail(ev) {
   const tiMarkup = ev.ti_source
     ? `<p><strong>Threat Intel Source:</strong> ${ev.ti_source}</p>`
     : "";
+  const signalMarkup = `<p><strong>Evidence Signal:</strong> ${
+    ev.evidence_signal || "PAMP"
+  }</p>`;
   return `
     <div class="detail-card">
       <h4>${ev.name || "Evidence"}</h4>
@@ -765,6 +769,7 @@ function buildEvidenceDetail(ev) {
     <p><strong>Updated:</strong> ${formatDateTime(ev.modifiedDate)}</p>
     <p><strong>Observed:</strong> ${formatDateTime(ev.timestampDate)}</p>
     <p><strong>Severity:</strong> ${ev.severity}</p>
+    ${signalMarkup}
     <p><strong>Time Diff:</strong> ${formatTimeDiff(ev)} (flow vs. evidence)</p>
     ${tiMarkup}
     <div>
