@@ -237,12 +237,20 @@ def _severity_rank(level: str) -> int:
 def _normalize_severity(indicator: Dict) -> str:
     level = indicator.get("x_slips_threat_level")
     if level:
-        return str(level).lower()
+        normalized = str(level).lower()
+        if normalized in SEVERITY_ORDER and normalized != "info":
+            return normalized
     labels = indicator.get("labels") or []
     for label in labels:
         lower = label.lower()
         if lower in SEVERITY_ORDER:
             return lower
+    description = indicator.get("description") or ""
+    threat_match = THREAT_LEVEL_RE.search(description)
+    if threat_match:
+        level = threat_match.group(1).lower()
+        if level in SEVERITY_ORDER:
+            return level
     return "info"
 
 
@@ -471,6 +479,7 @@ def _parse_taxii1_indicator(
         "created": created_time,
         "modified": created_time,
         "x_slips_threat_level": threat_level or "info",
+        "x_slips_evidence_signal": meta.get("evidence_signal") or "PAMP",
         "x_slips_profile_ip": profile_ip,
         "x_slips_evidence_id": indicator_id,
         "x_slips_victim": meta.get("victim"),
@@ -701,6 +710,8 @@ def _prepare_evidences(objects: List[Dict]) -> List[Dict]:
                 "sort_ts": dt_obj.isoformat(),
                 "severity": severity,
                 "severity_rank": _severity_rank(severity),
+                "evidence_signal": indicator.get("x_slips_evidence_signal")
+                or "PAMP",
                 "profile_ip": profile_ip,
                 "direction": indicator.get("x_slips_attacker_direction"),
                 "victim": victim_ip,
