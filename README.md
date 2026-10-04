@@ -17,6 +17,9 @@ There are **two TAXII backends** you can choose from:
 2. Start the SlipsWeb stack (TAXII server + web UI).
 3. Open the web UI and inspect the alerts.
 
+Hover over the evidence-volume line to see each minute's full local date and
+time with its evidence count.
+
 ## 1. Configure the Medallion server
 The main Medallion settings (host, port, data file) live in
 `config/medallion_config.json`.
