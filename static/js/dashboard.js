@@ -307,12 +307,23 @@ function updateTimelineChart(points) {
             backgroundColor: "rgba(56,189,248,0.2)",
             tension: 0.4,
             fill: true,
+            pointHitRadius: 12,
           },
         ],
       },
       options: {
         responsive: true,
-        plugins: { legend: { display: false } },
+        interaction: { mode: "nearest", axis: "x", intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: (items) => formatDateTime(
+                state.timelinePoints[items[0]?.dataIndex]?.label,
+              ),
+            },
+          },
+        },
         scales: {
           x: { ticks: { color: "#94a3b8" } },
           y: { ticks: { color: "#94a3b8" }, beginAtZero: true },
